@@ -16,7 +16,7 @@ WEIGHTS_DIR = SUBMISSION_DIR / "weights"
 sys.path.insert(0, str(SUBMISSION_DIR))
 from policy import EgoMemNet, Features  # noqa: E402
 
-TEMPERATURE = 1.0
+TEMPERATURE = 0.75                                     # held-out: 0.5 -> 29.2, 0.75 -> 30.2, 1.0 -> 29.6
 
 
 class DoomAgent:

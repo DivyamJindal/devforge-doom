@@ -26,7 +26,7 @@ def run_one(job):
     from doom_env import make_env
     from ppo import Shaper, TIER_TICKS
     import vizdoom as vd
-    src, idx, weights, tmp = job
+    src, idx, weights, tmp, temp = job
     if src == "freedoom":
         wad, m, ticks = os.path.join(os.path.dirname(vd.__file__), "freedoom2.wad"), idx, 4200
     else:
@@ -34,6 +34,7 @@ def run_one(job):
         tier = int(src[-1]); wad = f"{tmp}/{src}_{idx}.wad"; generate(EVAL_SEED0 + idx, tier, wad); m, ticks = "MAP01", TIER_TICKS[tier]
     sys.path.insert(0, str(ROOT / "submission"))
     import agent as agent_mod
+    agent_mod.TEMPERATURE = temp
     if Path(weights).name == "egomem.pt":
         agent_mod.WEIGHTS_DIR = Path(weights).parent
     env = make_env(wad, m, episode_ticks=ticks, render_buffers=False)
@@ -62,15 +63,16 @@ def main():
     ap.add_argument("--weights", default=str(ROOT / "submission" / "weights" / "egomem.pt"))
     ap.add_argument("--per-tier", type=int, default=12); ap.add_argument("--procs", type=int, default=8)
     ap.add_argument("--no-freedoom", action="store_true"); ap.add_argument("--json", default=None)
+    ap.add_argument("--temp", type=float, default=1.0)
     a = ap.parse_args()
     from ppo import FREEDOOM_EVAL
     tmp = "/tmp/egomem_eval"; shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp)
-    jobs = [(f"gen{t}", i, a.weights, tmp) for t in (1, 2, 3, 4) for i in range(a.per_tier)]
+    jobs = [(f"gen{t}", i, a.weights, tmp, a.temp) for t in (1, 2, 3, 4) for i in range(a.per_tier)]
     if not a.no_freedoom:
-        jobs += [("freedoom", m, a.weights, tmp) for m in FREEDOOM_EVAL]
+        jobs += [("freedoom", m, a.weights, tmp, a.temp) for m in FREEDOOM_EVAL]
     with Pool(a.procs) as p:
         res = p.map(run_one, jobs, chunksize=1)
-    print(f"weights: {a.weights}")
+    print(f"weights: {a.weights}  temperature {a.temp}")
     print(f"{'set':9s} {'n':>3s} {'exit':>5s} {'keys':>5s} {'doors':>5s} {'locks':>5s} {'cells':>6s} {'kills':>5s} {'dead':>5s} {'proxy':>6s} {'ms/step':>8s}")
     rows = {}
     for src in sorted({r["src"] for r in res}):
