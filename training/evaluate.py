@@ -34,7 +34,8 @@ def run_one(job):
         tier = int(src[-1]); wad = f"{tmp}/{src}_{idx}.wad"; generate(EVAL_SEED0 + idx, tier, wad); m, ticks = "MAP01", TIER_TICKS[tier]
     sys.path.insert(0, str(ROOT / "submission"))
     import agent as agent_mod
-    agent_mod.WEIGHTS_DIR = Path(weights).parent
+    if Path(weights).name == "egomem.pt":
+        agent_mod.WEIGHTS_DIR = Path(weights).parent
     env = make_env(wad, m, episode_ticks=ticks, render_buffers=False)
     ag = agent_mod.DoomAgent(env.observation_space, env.action_space, "cpu")
     if Path(weights).name != "egomem.pt":
