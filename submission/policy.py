@@ -107,7 +107,15 @@ class Features:
                         self.locked_seen, min(self.since_locked, 500) / 250, self.door_seen, min(self.since_door, 500) / 250,
                         self.dmg_recent, min(self.n_mem, MEM_CAP) / MEM_CAP], np.float32)
         self.t += 1
-        out = {"ray": ray, "ent": ent, "mask": m, "scal": np.concatenate([vit, pa, mem])}
+        et = np.asarray(ve["entity_type"], np.int64)
+        enemy = bool(((et >= 1) & (et <= 3) & (m > 0)).any())
+        front = float(min(dist[0], dist[1], dist[-1]))
+        am = np.ones(N_ACT, np.float32)
+        if not enemy or ATK in ACTIONS[self.prev_action]:     # no target, or fired last step (held pistol fire spreads)
+            am[[i for i, a in enumerate(ACTIONS) if ATK in a]] = 0.0
+        if front > 0.12:                                      # nothing within reach ahead: USE is pointless
+            am[[i for i, a in enumerate(ACTIONS) if USE in a]] = 0.0
+        out = {"ray": ray, "ent": ent, "mask": m, "scal": np.concatenate([vit, pa, mem]), "amask": am}
         if self.vision:                                # 4 x 30 x 40 uint8: RGB + depth, every 4th pixel
             rgb = np.asarray(obs.get("rgb", np.zeros((120, 160, 3), np.uint8)))[::4, ::4]
             dep = np.asarray(obs.get("depth", np.zeros((120, 160), np.uint8)))[::4, ::4]
@@ -161,10 +169,13 @@ class EgoMemNet(nn.Module):
             parts.append(self.vis(img.float() / 255.0))
         return self.fuse(torch.cat(parts, -1))
 
+    def masked(self, logits, amask):
+        return logits if amask is None else logits.masked_fill(amask < 0.5, -1e9)
+
     def step(self, x: dict, h):
         z = self.embed(x["ray"], x["ent"], x["mask"], x["scal"], x.get("img"))
         h = self.gru(z, h)
-        return self.pi(h), self.v(h).squeeze(-1), h
+        return self.masked(self.pi(h), x.get("amask")), self.v(h).squeeze(-1), h
 
     def sequence(self, x: dict, h0, starts):
         """x: tensors [T,B,...]; starts [T,B] = 1 where a new episode begins (hidden reset). -> logits, values [T,B]."""
@@ -175,5 +186,5 @@ class EgoMemNet(nn.Module):
         for t in range(T):
             h = h * (1 - starts[t]).unsqueeze(-1)
             h = self.gru(z[t], h)
-            logits.append(self.pi(h)); values.append(self.v(h).squeeze(-1))
+            logits.append(self.masked(self.pi(h), x["amask"][t] if "amask" in x else None)); values.append(self.v(h).squeeze(-1))
         return torch.stack(logits), torch.stack(values)

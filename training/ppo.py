@@ -36,7 +36,8 @@ FREEDOOM_EVAL = ["MAP02", "MAP07", "MAP11", "MAP16", "MAP23", "MAP29"]
 class Shaper:
     """Shaped reward from ground truth. Mirrors the evaluation categories."""
 
-    W = {"cell": 0.06, "kill": 1.0, "item": 0.15, "key": 4.0, "dmg": 0.006, "door": 1.0, "lock": 3.0, "exit": 15.0, "death": 4.0, "time": 0.002, "curio": 0.02}
+    W = {"cell": 0.06, "kill": 1.0, "item": 0.15, "key": 4.0, "dmg": 0.006, "door": 1.0, "lock": 3.0, "exit": 15.0, "death": 4.0, "time": 0.002, "curio": 0.02, "stuck": 1.0}
+    STUCK_TICS = 200          # no new area / kill / key / door for this long -> -1 and the episode is cut (wasted time)
 
     def __init__(self, env, cell=128.0, w: dict | None = None):
         self.env, self.cell = env, cell
@@ -44,16 +45,22 @@ class Shaper:
         ps = env.privileged_state()
         self.cells = {self._c(ps)}; self.kills = ps["kills"]; self.items = ps["items"]; self.keys = int(np.sum(ps["keys"]))
         self.health = ps["health"]; self.door_sec = dict(getattr(env.mapinfo, "door_sectors", {}) or {})
-        self.opened = set(); self.n_doors = 0; self.n_locks = 0
+        self.opened = set(); self.n_doors = 0; self.n_locks = 0; self.last_progress = ps["tic"]; self.stuck = False
 
     def _c(self, ps):
         return (int(ps["x"] // self.cell), int(ps["y"] // self.cell))
 
     def __call__(self, ps) -> float:
         w = self.w; r = -w["time"]
+        progress = (ps["kills"], int(np.sum(ps["keys"])), len(self.opened))
         c = self._c(ps)
         if c not in self.cells:
-            self.cells.add(c); r += w["cell"]
+            self.cells.add(c); r += w["cell"]; self.last_progress = ps["tic"]
+        if progress != getattr(self, "_prog", progress):
+            self.last_progress = ps["tic"]
+        self._prog = progress
+        if ps["tic"] - self.last_progress > Shaper.STUCK_TICS and not ps["exit_reached"]:
+            self.stuck = True; r -= w["stuck"]
         r += w["kill"] * (ps["kills"] - self.kills); self.kills = ps["kills"]
         r += w["item"] * max(0, ps["items"] - self.items); self.items = ps["items"]
         k = int(np.sum(ps["keys"])); r += w["key"] * max(0, k - self.keys); self.keys = k
@@ -81,7 +88,7 @@ def make_map(rng: random.Random, weights: dict, wdir: Path, tag: str):
     return str(path), "MAP01", TIER_TICKS[tier], src
 
 
-def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidden: int, shape: dict, vision: bool = False, repeat: int = 2):
+def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidden: int, shape: dict, vision: bool = False, masks: bool = False, repeat: int = 2):
     """Steps n environments. Level loading is double-buffered: while a level is being played, the next one is generated
     and booted in a background thread (ViZDoom releases the GIL), so a finished episode never stalls the batch.
     Each level is played `repeat` times (a reset costs ~3 ms, a fresh level ~180 ms).
@@ -139,6 +146,8 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidde
         buf = defaultdict(list); h0 = h.clone(); infos = []
         for t in range(T):
             x = stack(cur)
+            if not masks:
+                x.pop("amask", None)
             with torch.no_grad():
                 logits, val, h = net.step({k: torch.from_numpy(v) for k, v in x.items()}, h)
                 dist = torch.distributions.Categorical(logits=logits); act = dist.sample(); logp = dist.log_prob(act)
@@ -149,7 +158,7 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidde
             for i in range(n):
                 obs, _, term, trunc, _ = envs[i].step(feats[i].button_vector(int(act[i])))
                 ps = envs[i].privileged_state(); r = shapers[i](ps); ret[i] += r; rews[i] = r
-                if term or trunc:
+                if term or trunc or shapers[i].stuck:
                     sh = shapers[i]
                     infos.append({"src": meta[i], "exit": float(ps["exit_reached"]), "dead": float(ps["dead"]), "kills": ps["kills"],
                                   "keys": int(np.sum(ps["keys"])), "doors": sh.n_doors, "locks": sh.n_locks, "cells": len(sh.cells),
@@ -161,7 +170,7 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidde
             buf["rew"].append(rews); buf["done"].append(dones)
             start = dones.copy(); h = h * (1 - torch.from_numpy(dones)).unsqueeze(-1)
         with torch.no_grad():
-            _, last_v, _ = net.step({k: torch.from_numpy(v) for k, v in stack(cur).items()}, h)
+            _, last_v, _ = net.step({k: torch.from_numpy(v) for k, v in stack(cur).items() if k != "amask" or masks}, h)
         outd = {k: np.stack(v) for k, v in buf.items()}
         outd["h0"] = h0.numpy(); outd["last_v"] = last_v.numpy()
         conn.send((outd, infos))
@@ -193,6 +202,7 @@ def main():
     ap.add_argument("--mix", default="gen1:0.2,gen2:0.25,gen3:0.3,gen4:0.15,freedoom:0.1")
     ap.add_argument("--init", default=None); ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--vision", action="store_true", help="add the RGB+depth CNN branch")
+    ap.add_argument("--masks", action="store_true", help="train with observation-based action masks (stored in the checkpoint)")
     ap.add_argument("--shape", default="", help="reward weight overrides, e.g. death=8,dmg=0.02")
     ap.add_argument("--out", default="runs/local"); ap.add_argument("--save-every", type=int, default=50)
     a = ap.parse_args()
@@ -209,7 +219,7 @@ def main():
     shared = {k: v.detach().cpu().clone().share_memory_() for k, v in net.state_dict().items()}
     ctx = tmp.get_context("spawn"); pipes, procs = [], []
     for w in range(a.workers):
-        p1, p2 = ctx.Pipe(); pr = ctx.Process(target=worker, args=(p2, w, a.envs_per_worker, a.seed * 100003 + w, weights, shared, a.hidden, shape, a.vision), daemon=True)
+        p1, p2 = ctx.Pipe(); pr = ctx.Process(target=worker, args=(p2, w, a.envs_per_worker, a.seed * 100003 + w, weights, shared, a.hidden, shape, a.vision, a.masks), daemon=True)
         pr.start(); pipes.append(p1); procs.append(pr)
     for p in pipes:
         assert p.recv() == "ready"
@@ -246,7 +256,7 @@ def main():
             delta = rew[t] + a.gamma * nv * (1 - done[t]) - val[t]
             gae = delta + a.gamma * a.lam * (1 - done[t]) * gae; adv[t] = gae
         ret = adv + val
-        B = {k: torch.from_numpy(buf[k]).to(dev) for k in ("ray", "ent", "mask", "scal", "img") if k in buf}
+        B = {k: torch.from_numpy(buf[k]).to(dev) for k in ("ray", "ent", "mask", "scal", "img", "amask") if k in buf}
         act_t = torch.from_numpy(buf["act"]).to(dev); oldlp = torch.from_numpy(buf["logp"]).to(dev)
         adv_t = torch.from_numpy(adv).float().to(dev); ret_t = torch.from_numpy(ret).float().to(dev)
         st_t = torch.from_numpy(buf["start"]).to(dev)
@@ -278,7 +288,7 @@ def main():
             print(line, flush=True)
             (out / "stats.json").write_text(json.dumps({"steps": total, "fps": fps, "by_src": {s: {k: float(np.mean([x[k] for x in H])) for k in ("exit", "keys", "doors", "locks", "kills", "cells", "dead", "ret")} for s, H in hist.items() if H}}))
         if upd % a.save_every == 0 or upd == n_updates:
-            ck = {"state": {k: v.cpu() for k, v in net.state_dict().items()}, "cfg": {"hidden": a.hidden, "vision": a.vision}, "steps": total}
+            ck = {"state": {k: v.cpu() for k, v in net.state_dict().items()}, "cfg": {"hidden": a.hidden, "vision": a.vision, "masks": a.masks}, "steps": total}
             torch.save(ck, out / "egomem.pt"); torch.save(ck, out / f"egomem_{total // 1000000}M.pt")
     for p in pipes:
         p.recv(); p.send(("close", None))

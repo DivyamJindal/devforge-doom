@@ -29,9 +29,10 @@ class DoomAgent:
         if path.stat().st_size < 4096:                         # an un-fetched Git LFS pointer: use the plain-git copy
             path = WEIGHTS_DIR / "egomem_nolfs.raw"
         ck = torch.load(path, map_location="cpu", weights_only=True)
-        self.net = EgoMemNet(**ck.get("cfg", {}))
+        self.net = EgoMemNet(**{k: v for k, v in ck.get("cfg", {}).items() if k != "masks"})
         self.net.load_state_dict(ck["state"]); self.net.eval()
         self.feat = Features(vision=self.net.vision)
+        self.use_masks = bool(ck.get("cfg", {}).get("masks", False))   # only for checkpoints trained with action masks
         self.h = torch.zeros(1, self.net.hidden)
         self.gen = torch.Generator().manual_seed(0)
         with torch.no_grad():                                   # warm up kernels outside the timed act() calls
@@ -52,7 +53,7 @@ class DoomAgent:
     @torch.no_grad()
     def _decide(self, observation) -> int:
         f = self.feat(observation)
-        x = {k: torch.from_numpy(np.ascontiguousarray(v))[None] for k, v in f.items()}
+        x = {k: torch.from_numpy(np.ascontiguousarray(v))[None] for k, v in f.items() if k != "amask" or self.use_masks}
         logits, _, self.h = self.net.step(x, self.h)
         p = torch.softmax(logits[0] / TEMPERATURE, -1)
         return int(torch.multinomial(p, 1, generator=self.gen))
