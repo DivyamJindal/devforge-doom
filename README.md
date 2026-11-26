@@ -28,6 +28,10 @@ mirror the four hidden tiers, so it cannot memorise any layout.
 | **Rotation** | Circular convolutions over the ray ring, so an obstacle "behind-left" is encoded the same way wherever it sits on the ring. |
 | **USE semantics** | USE fires on the button-down edge, so our action encoder pulses it (held USE is released every other step) and doors don't bounce. |
 
+**RL first.** The shipped policy is trained with reinforcement learning. We also built a training-only privileged
+teacher (`training/expert.py`, BFS on the generator's grid) for a DAgger imitation experiment (`training/dagger.py`); it is
+scaffolding, never imported by `submission/`, and any DAgger-initialised policy is fine-tuned with PPO before it ships.
+
 All decisions come from the trained network. There is no pathfinding, no hand-written rules and no aimbot; the agent
 samples from its learned action distribution with a fixed seed.
 
@@ -49,7 +53,33 @@ samples from its learned action distribution with a fixed seed.
 
 ## Results (held-out maps, `training/evaluate.py`)
 
-_Filled in from the latest checkpoint._
+The shipped weights come from **pure RL** (our recurrent PPO, ~83M environment steps, run `e`: warm-started from run
+`d`, curriculum with an easy tier-0 on-ramp). Scored by the exact submission agent on levels it never saw: fresh generator
+seeds outside the training range, plus 6 Freedoom 2 maps excluded from training. Sampling temperature 0.75.
+
+| held-out set | n | exit reached | keycards | doors opened | locked doors | areas explored | kills | died |
+|---|---|---|---|---|---|---|---|---|
+| Tier 1, combat | 8 | **75%** | n/a | n/a | n/a | 19 | 3.9 | 12% |
+| Tier 2, multi-room | 8 | 38% | n/a | 2.5 | n/a | 47 | 3.4 | 25% |
+| Tier 3, key → lock → exit | 8 | 25% | **0.50** | 1.9 | **0.38** | 40 | 2.5 | 12% |
+| Tier 4, gauntlet | 8 | 0% | 0.50 | 1.1 | 0.12 | 35 | 4.2 | 50% |
+| Freedoom 2 (real maps) | 6 | 0% | 0 | 1.0 | 0 | 28 | 2.8 | 100% |
+
+Learning curve on the same held-out suite (tier-weighted proxy of the scorer's categories):
+
+| checkpoint | steps | proxy |
+|---|---|---|
+| random policy | 0 | ≈ -3 |
+| run `d` | 4M | -1.6 |
+| run `e` | 83M | **30.2** |
+
+Latency: 3-7 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
+exit of the template test map in 66 steps.
+
+**What did not work, and why it matters.** Lock-step vectorised training was bottlenecked at ~1k steps/s by level loading;
+asynchronous workers with double-buffered level boot raised it to ~5k steps/s per run. Velocity dead-reckoning for a
+metric map drifted too much to be useful, which is why the memory is episodic and place-based. A higher sampling
+temperature (1.0) and a lower one (0.5) both scored slightly worse than 0.75.
 
 ## Run it
 
