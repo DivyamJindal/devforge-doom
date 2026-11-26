@@ -28,7 +28,7 @@ class DoomAgent:
         ck = torch.load(WEIGHTS_DIR / "egomem.pt", map_location="cpu", weights_only=True)
         self.net = EgoMemNet(**ck.get("cfg", {}))
         self.net.load_state_dict(ck["state"]); self.net.eval()
-        self.feat = Features()
+        self.feat = Features(vision=self.net.vision)
         self.h = torch.zeros(1, self.net.hidden)
         self.gen = torch.Generator().manual_seed(0)
         with torch.no_grad():                                   # warm up kernels outside the timed act() calls

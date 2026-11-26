@@ -41,7 +41,8 @@ def place_signature(dist: np.ndarray, hit: np.ndarray) -> np.ndarray:
 class Features:
     """Per-episode stateful feature extractor (memory lives here). Call reset() before every map."""
 
-    def __init__(self):
+    def __init__(self, vision: bool = False):
+        self.vision = vision
         self.reset()
 
     def reset(self):
@@ -106,17 +107,34 @@ class Features:
                         self.locked_seen, min(self.since_locked, 500) / 250, self.door_seen, min(self.since_door, 500) / 250,
                         self.dmg_recent, min(self.n_mem, MEM_CAP) / MEM_CAP], np.float32)
         self.t += 1
-        return {"ray": ray, "ent": ent, "mask": m, "scal": np.concatenate([vit, pa, mem])}
+        out = {"ray": ray, "ent": ent, "mask": m, "scal": np.concatenate([vit, pa, mem])}
+        if self.vision:                                # 4 x 30 x 40 uint8: RGB + depth, every 4th pixel
+            rgb = np.asarray(obs.get("rgb", np.zeros((120, 160, 3), np.uint8)))[::4, ::4]
+            dep = np.asarray(obs.get("depth", np.zeros((120, 160), np.uint8)))[::4, ::4]
+            out["img"] = np.concatenate([rgb.transpose(2, 0, 1), dep[None]]).astype(np.uint8)
+        return out
 
 
 def stack(feats: list[dict]) -> dict:
     return {k: np.stack([f[k] for f in feats]) for k in feats[0]}
 
 
+def warm_start(net: "EgoMemNet", state: dict) -> None:
+    """Load a checkpoint into a (possibly wider) net: extra fuse inputs (the vision branch) start at zero, so the
+    warm-started policy behaves exactly like the old one until training teaches it to use the new input."""
+    own = net.state_dict()
+    for k, v in state.items():
+        if k in own and own[k].shape == v.shape:
+            own[k] = v
+        elif k == "fuse.0.weight":
+            w = torch.zeros_like(own[k]); w[:, : v.shape[1]] = v; own[k] = w
+    net.load_state_dict(own)
+
+
 class EgoMemNet(nn.Module):
-    def __init__(self, hidden: int = 256):
+    def __init__(self, hidden: int = 256, vision: bool = False):
         super().__init__()
-        self.hidden = hidden
+        self.hidden, self.vision = hidden, vision
         self.ray = nn.Sequential(
             nn.Conv1d(1 + N_HIT, 32, 5, padding=2, padding_mode="circular"), nn.ReLU(),
             nn.Conv1d(32, 48, 5, stride=2, padding=2, padding_mode="circular"), nn.ReLU(),
@@ -125,27 +143,34 @@ class EgoMemNet(nn.Module):
         self.ent = nn.Sequential(nn.Linear(5 + N_ETYPE, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU())
         self.ent_score = nn.Linear(64, 1)
         self.scal = nn.Sequential(nn.Linear(N_SCALAR, 128), nn.ReLU())
-        self.fuse = nn.Sequential(nn.Linear(256 + 128 + 128, hidden), nn.ReLU())
+        if vision:   # sees what rays cannot: exit pads/switches, door and key colours, lighting
+            self.vis = nn.Sequential(nn.Conv2d(4, 16, 5, stride=2, padding=2), nn.ReLU(), nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),
+                                     nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 4 * 5, 128), nn.ReLU())
+        self.fuse = nn.Sequential(nn.Linear(256 + 128 + 128 + (128 if vision else 0), hidden), nn.ReLU())
         self.gru = nn.GRUCell(hidden, hidden)
         self.pi = nn.Linear(hidden, N_ACT); self.v = nn.Linear(hidden, 1)
         nn.init.orthogonal_(self.pi.weight, 0.01); nn.init.zeros_(self.pi.bias)
 
-    def embed(self, ray, ent, mask, scal):
+    def embed(self, ray, ent, mask, scal, img=None):
         e = self.ent(ent)                                                   # [N,32,64]
         s = self.ent_score(e).squeeze(-1).masked_fill(mask < 0.5, -1e9)
         att = torch.softmax(s, -1) * (mask.sum(-1, keepdim=True) > 0)
         pooled = torch.cat([(att.unsqueeze(-1) * e).sum(1), (e - (1 - mask.unsqueeze(-1)) * 1e4).max(1).values.clamp(min=0)], -1)
-        return self.fuse(torch.cat([self.ray(ray), pooled, self.scal(scal)], -1))
+        parts = [self.ray(ray), pooled, self.scal(scal)]
+        if self.vision:
+            parts.append(self.vis(img.float() / 255.0))
+        return self.fuse(torch.cat(parts, -1))
 
     def step(self, x: dict, h):
-        z = self.embed(x["ray"], x["ent"], x["mask"], x["scal"])
+        z = self.embed(x["ray"], x["ent"], x["mask"], x["scal"], x.get("img"))
         h = self.gru(z, h)
         return self.pi(h), self.v(h).squeeze(-1), h
 
     def sequence(self, x: dict, h0, starts):
         """x: tensors [T,B,...]; starts [T,B] = 1 where a new episode begins (hidden reset). -> logits, values [T,B]."""
         T, Bn = starts.shape
-        z = self.embed(*(x[k].reshape(T * Bn, *x[k].shape[2:]) for k in ("ray", "ent", "mask", "scal"))).reshape(T, Bn, -1)
+        keys = ("ray", "ent", "mask", "scal", "img") if self.vision else ("ray", "ent", "mask", "scal")
+        z = self.embed(*(x[k].reshape(T * Bn, *x[k].shape[2:]) for k in keys)).reshape(T, Bn, -1)
         h, logits, values = h0, [], []
         for t in range(T):
             h = h * (1 - starts[t]).unsqueeze(-1)

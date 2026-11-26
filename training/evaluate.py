@@ -37,7 +37,7 @@ def run_one(job):
     agent_mod.TEMPERATURE = temp
     if Path(weights).name == "egomem.pt":
         agent_mod.WEIGHTS_DIR = Path(weights).parent
-    env = make_env(wad, m, episode_ticks=ticks, render_buffers=False)
+    env = make_env(wad, m, episode_ticks=ticks, render_buffers=True)   # like the scorer
     ag = agent_mod.DoomAgent(env.observation_space, env.action_space, "cpu")
     if Path(weights).name != "egomem.pt":
         import torch as T

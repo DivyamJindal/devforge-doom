@@ -26,7 +26,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "submission")); sys.path.insert(0, str(ROOT / "training"))
-from policy import EgoMemNet, Features, N_ACT, stack  # noqa: E402
+from policy import EgoMemNet, Features, N_ACT, stack, warm_start  # noqa: E402
 
 TIER_TICKS = {0: 2100, 1: 2100, 2: 3150, 3: 4200, 4: 4200}
 FREEDOOM_TRAIN = [f"MAP{i:02d}" for i in range(1, 33) if i not in (2, 7, 11, 16, 23, 29)]  # those 6 held out for eval
@@ -81,7 +81,7 @@ def make_map(rng: random.Random, weights: dict, wdir: Path, tag: str):
     return str(path), "MAP01", TIER_TICKS[tier], src
 
 
-def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidden: int, shape: dict, repeat: int = 2):
+def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidden: int, shape: dict, vision: bool = False, repeat: int = 2):
     """Steps n environments. Level loading is double-buffered: while a level is being played, the next one is generated
     and booted in a background thread (ViZDoom releases the GIL), so a finished episode never stalls the batch.
     Each level is played `repeat` times (a reset costs ~3 ms, a fresh level ~180 ms).
@@ -91,7 +91,7 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidde
     os.environ["OMP_NUM_THREADS"] = "1"; torch.set_num_threads(1)
     from doom_env import make_env
     rng = random.Random(seed); wdir = Path(f"/tmp/egomem_maps/{seed}"); wdir.mkdir(parents=True, exist_ok=True)
-    envs = [None] * n; feats = [Features() for _ in range(n)]; shapers = [None] * n; meta = [None] * n; ret = [0.0] * n
+    envs = [None] * n; feats = [Features(vision) for _ in range(n)]; shapers = [None] * n; meta = [None] * n; ret = [0.0] * n
     plays = [0] * n; spare = [None] * n; threads = [None] * n; counter = [0]
     boot = threading.Lock()                       # ViZDoom instances must not boot concurrently in one process
 
@@ -102,7 +102,7 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidde
                 counter[0] += 1
                 wad, m, ticks, src = make_map(r, weights, wdir, f"w{wid}_{i}_{counter[0]}")
                 with boot:
-                    e = make_env(wad, m, episode_ticks=ticks, render_buffers=False)
+                    e = make_env(wad, m, episode_ticks=ticks, render_buffers=vision)
                     obs, _ = e.reset(seed=r.randrange(1 << 30))
                 spare[i] = (e, obs, src); return
             except Exception as ex:  # a rare bad level: just make another
@@ -128,7 +128,7 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidde
     for i in range(n):
         prefetch(i)
     cur = [new_episode(i) for i in range(n)]
-    net = EgoMemNet(hidden); net.eval()
+    net = EgoMemNet(hidden, vision); net.eval()
     h = torch.zeros(n, hidden); start = np.ones(n, np.float32)
     conn.send("ready")
     while True:
@@ -192,6 +192,7 @@ def main():
     ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--mix", default="gen1:0.2,gen2:0.25,gen3:0.3,gen4:0.15,freedoom:0.1")
     ap.add_argument("--init", default=None); ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--vision", action="store_true", help="add the RGB+depth CNN branch")
     ap.add_argument("--shape", default="", help="reward weight overrides, e.g. death=8,dmg=0.02")
     ap.add_argument("--out", default="runs/local"); ap.add_argument("--save-every", type=int, default=50)
     a = ap.parse_args()
@@ -200,15 +201,15 @@ def main():
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     weights = {k: float(v) for k, v in (x.split(":") for x in a.mix.split(","))}
     shape = {k: float(v) for k, v in (x.split("=") for x in a.shape.split(",") if x)}
-    net = EgoMemNet(a.hidden).to(dev)
+    net = EgoMemNet(a.hidden, a.vision).to(dev)
     if a.init:
-        net.load_state_dict(torch.load(a.init, map_location=dev, weights_only=True)["state"])
+        warm_start(net, torch.load(a.init, map_location=dev, weights_only=True)["state"])
     opt = torch.optim.Adam(net.parameters(), lr=a.lr, eps=1e-5)
     import torch.multiprocessing as tmp
     shared = {k: v.detach().cpu().clone().share_memory_() for k, v in net.state_dict().items()}
     ctx = tmp.get_context("spawn"); pipes, procs = [], []
     for w in range(a.workers):
-        p1, p2 = ctx.Pipe(); pr = ctx.Process(target=worker, args=(p2, w, a.envs_per_worker, a.seed * 100003 + w, weights, shared, a.hidden, shape), daemon=True)
+        p1, p2 = ctx.Pipe(); pr = ctx.Process(target=worker, args=(p2, w, a.envs_per_worker, a.seed * 100003 + w, weights, shared, a.hidden, shape, a.vision), daemon=True)
         pr.start(); pipes.append(p1); procs.append(pr)
     for p in pipes:
         assert p.recv() == "ready"
@@ -245,7 +246,7 @@ def main():
             delta = rew[t] + a.gamma * nv * (1 - done[t]) - val[t]
             gae = delta + a.gamma * a.lam * (1 - done[t]) * gae; adv[t] = gae
         ret = adv + val
-        B = {k: torch.from_numpy(buf[k]).to(dev) for k in ("ray", "ent", "mask", "scal")}
+        B = {k: torch.from_numpy(buf[k]).to(dev) for k in ("ray", "ent", "mask", "scal", "img") if k in buf}
         act_t = torch.from_numpy(buf["act"]).to(dev); oldlp = torch.from_numpy(buf["logp"]).to(dev)
         adv_t = torch.from_numpy(adv).float().to(dev); ret_t = torch.from_numpy(ret).float().to(dev)
         st_t = torch.from_numpy(buf["start"]).to(dev)
@@ -277,7 +278,7 @@ def main():
             print(line, flush=True)
             (out / "stats.json").write_text(json.dumps({"steps": total, "fps": fps, "by_src": {s: {k: float(np.mean([x[k] for x in H])) for k in ("exit", "keys", "doors", "locks", "kills", "cells", "dead", "ret")} for s, H in hist.items() if H}}))
         if upd % a.save_every == 0 or upd == n_updates:
-            ck = {"state": {k: v.cpu() for k, v in net.state_dict().items()}, "cfg": {"hidden": a.hidden}, "steps": total}
+            ck = {"state": {k: v.cpu() for k, v in net.state_dict().items()}, "cfg": {"hidden": a.hidden, "vision": a.vision}, "steps": total}
             torch.save(ck, out / "egomem.pt"); torch.save(ck, out / f"egomem_{total // 1000000}M.pt")
     for p in pipes:
         p.recv(); p.send(("close", None))
