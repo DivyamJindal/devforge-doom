@@ -25,7 +25,10 @@ class DoomAgent:
         self.action_space = action_space
         torch.set_num_threads(1)
         self.device = "cpu"                                    # tiny network: CPU is faster than a GPU round trip
-        ck = torch.load(WEIGHTS_DIR / "egomem.pt", map_location="cpu", weights_only=True)
+        path = WEIGHTS_DIR / "egomem.pt"
+        if path.stat().st_size < 4096:                         # an un-fetched Git LFS pointer: use the plain-git copy
+            path = WEIGHTS_DIR / "egomem_nolfs.raw"
+        ck = torch.load(path, map_location="cpu", weights_only=True)
         self.net = EgoMemNet(**ck.get("cfg", {}))
         self.net.load_state_dict(ck["state"]); self.net.eval()
         self.feat = Features(vision=self.net.vision)
