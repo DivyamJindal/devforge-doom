@@ -27,6 +27,8 @@ PRESETS = {
     "fast": ["--lr", "7e-4", "--ent", "0.01", "--ent-end", "0.002", "--epochs", "4", "--minibatches", "4",
              "--mix", "gen0:0.3,gen1:0.1,gen2:0.2,gen3:0.25,gen4:0.05,freedoom:0.1"],
     "smoke": ["--steps", "300000"],
+    "polish": ["--lr", "3e-4", "--ent", "0.006", "--ent-end", "0.002", "--epochs", "4", "--minibatches", "4",
+               "--mix", "gen0:0.05,gen1:0.15,gen2:0.2,gen3:0.35,gen4:0.2,freedoom:0.05"],
     # imitation learning from the privileged teacher (training/dagger.py), then PPO fine-tunes with --init
     "dagger": ["DAGGER", "--iters", "10", "--steps-per-iter", "1500000", "--train-steps", "3000", "--batch", "64"],
     "survive": ["--lr", "7e-4", "--ent", "0.01", "--ent-end", "0.002", "--epochs", "4", "--minibatches", "4",
