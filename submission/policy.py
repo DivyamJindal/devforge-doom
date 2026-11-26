@@ -48,7 +48,7 @@ class Features:
         self.mem = np.zeros((MEM_CAP, SIG_DIM), np.float32); self.n_mem = 0; self.t = 0
         self.since_novel = 0; self.prev_action = 0; self.use_down = False
         self.locked_seen = 0.0; self.since_locked = 999; self.door_seen = 0.0; self.since_door = 999
-        self.prev_health = None; self.dmg_recent = 0.0
+        self.prev_health = None; self.dmg_recent = 0.0; self.novel = False
 
     def button_vector(self, a: int) -> np.ndarray:
         """Macro-action -> 9 buttons. USE fires on the button-down edge, so a held USE is released every other step."""
@@ -82,7 +82,8 @@ class Features:
             d = np.sqrt(((self.mem[: self.n_mem] - sig) ** 2).sum(1)); nov = float(d.min()); fam = float((d < NOVEL_THR).sum())
         else:
             nov, fam = 1.0, 0.0
-        if nov > NOVEL_THR:
+        self.novel = nov > NOVEL_THR                 # read by training for the episodic-curiosity bonus
+        if self.novel:
             self.since_novel = 0
         else:
             self.since_novel += 1

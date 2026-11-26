@@ -6,6 +6,8 @@ Design
 - Worker processes each run several official `doom_env` instances (same observations as evaluation, pixels off).
   Every episode starts on a NEW level: procedurally generated (training/mapgen.py, tiers 1-4) or a Freedoom 2 map,
   so the agent can only succeed by generalising, never by memorising a layout.
+- Intrinsic episodic curiosity (in the spirit of NGU): a small bonus whenever the agent's own place memory says the
+  current surroundings look new. It uses only the agent's observations, so it generalises beyond our level generator.
 - Rewards are shaped from `privileged_state()` (training only; the agent never sees it): new areas reached,
   kills, pickups, keycards, doors and locked doors opened, the exit (plus a time/health bonus), minus damage
   and death. This mirrors the hidden scorer's categories (exit > progression > exploration > combat).
@@ -34,7 +36,7 @@ FREEDOOM_EVAL = ["MAP02", "MAP07", "MAP11", "MAP16", "MAP23", "MAP29"]
 class Shaper:
     """Shaped reward from ground truth. Mirrors the evaluation categories."""
 
-    W = {"cell": 0.06, "kill": 1.0, "item": 0.15, "key": 4.0, "dmg": 0.006, "door": 1.0, "lock": 3.0, "exit": 15.0, "death": 4.0, "time": 0.002}
+    W = {"cell": 0.06, "kill": 1.0, "item": 0.15, "key": 4.0, "dmg": 0.006, "door": 1.0, "lock": 3.0, "exit": 15.0, "death": 4.0, "time": 0.002, "curio": 0.02}
 
     def __init__(self, env, cell=128.0, w: dict | None = None):
         self.env, self.cell = env, cell
@@ -155,6 +157,7 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidde
                     dones[i] = 1.0; cur[i] = new_episode(i)
                 else:
                     cur[i] = feats[i](obs)
+                    rews[i] += shapers[i].w["curio"] * feats[i].novel   # episodic curiosity: reward places that look new
             buf["rew"].append(rews); buf["done"].append(dones)
             start = dones.copy(); h = h * (1 - torch.from_numpy(dones)).unsqueeze(-1)
         with torch.no_grad():
