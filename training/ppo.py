@@ -34,8 +34,11 @@ FREEDOOM_EVAL = ["MAP02", "MAP07", "MAP11", "MAP16", "MAP23", "MAP29"]
 class Shaper:
     """Shaped reward from ground truth. Mirrors the evaluation categories."""
 
-    def __init__(self, env, cell=128.0):
+    W = {"cell": 0.06, "kill": 1.0, "item": 0.15, "key": 4.0, "dmg": 0.006, "door": 1.0, "lock": 3.0, "exit": 15.0, "death": 4.0, "time": 0.002}
+
+    def __init__(self, env, cell=128.0, w: dict | None = None):
         self.env, self.cell = env, cell
+        self.w = {**Shaper.W, **(w or {})}
         ps = env.privileged_state()
         self.cells = {self._c(ps)}; self.kills = ps["kills"]; self.items = ps["items"]; self.keys = int(np.sum(ps["keys"]))
         self.health = ps["health"]; self.door_sec = dict(getattr(env.mapinfo, "door_sectors", {}) or {})
@@ -45,23 +48,23 @@ class Shaper:
         return (int(ps["x"] // self.cell), int(ps["y"] // self.cell))
 
     def __call__(self, ps) -> float:
-        r = -0.002
+        w = self.w; r = -w["time"]
         c = self._c(ps)
         if c not in self.cells:
-            self.cells.add(c); r += 0.06
-        r += 1.0 * (ps["kills"] - self.kills); self.kills = ps["kills"]
-        r += 0.15 * max(0, ps["items"] - self.items); self.items = ps["items"]
-        k = int(np.sum(ps["keys"])); r += 4.0 * max(0, k - self.keys); self.keys = k
-        r -= 0.006 * max(0.0, self.health - ps["health"]); self.health = ps["health"]
+            self.cells.add(c); r += w["cell"]
+        r += w["kill"] * (ps["kills"] - self.kills); self.kills = ps["kills"]
+        r += w["item"] * max(0, ps["items"] - self.items); self.items = ps["items"]
+        k = int(np.sum(ps["keys"])); r += w["key"] * max(0, k - self.keys); self.keys = k
+        r -= w["dmg"] * max(0.0, self.health - ps["health"]); self.health = ps["health"]
         ceil, flo = ps["sector_ceiling"], ps["sector_floor"]
         if ceil is not None:
             for s, lock in self.door_sec.items():
                 if s not in self.opened and s < len(ceil) and ceil[s] - flo[s] > 56:
-                    self.opened.add(s); r += 3.0 if lock else 1.0; self.n_locks += bool(lock); self.n_doors += 1
+                    self.opened.add(s); r += w["lock"] if lock else w["door"]; self.n_locks += bool(lock); self.n_doors += 1
         if ps["exit_reached"]:
-            r += 15.0 + 5.0 * (1 - ps["tic"] / ps["episode_ticks"]) + 2.0 * max(ps["health"], 0) / 100
+            r += w["exit"] + 5.0 * (1 - ps["tic"] / ps["episode_ticks"]) + 2.0 * max(ps["health"], 0) / 100
         if ps["dead"]:
-            r -= 4.0
+            r -= w["death"]
         return r
 
 
@@ -76,7 +79,7 @@ def make_map(rng: random.Random, weights: dict, wdir: Path, tag: str):
     return str(path), "MAP01", TIER_TICKS[tier], src
 
 
-def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidden: int, repeat: int = 2):
+def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidden: int, shape: dict, repeat: int = 2):
     """Steps n environments. Level loading is double-buffered: while a level is being played, the next one is generated
     and booted in a background thread (ViZDoom releases the GIL), so a finished episode never stalls the batch.
     Each level is played `repeat` times (a reset costs ~3 ms, a fresh level ~180 ms).
@@ -117,7 +120,7 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidde
                     Path(old).unlink(missing_ok=True)
             envs[i], obs, meta[i] = spare[i]; plays[i] = 1
             prefetch(i)
-        feats[i].reset(); shapers[i] = Shaper(envs[i]); ret[i] = 0.0
+        feats[i].reset(); shapers[i] = Shaper(envs[i], w=shape); ret[i] = 0.0
         return feats[i](obs)
 
     for i in range(n):
@@ -186,12 +189,14 @@ def main():
     ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--mix", default="gen1:0.2,gen2:0.25,gen3:0.3,gen4:0.15,freedoom:0.1")
     ap.add_argument("--init", default=None); ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--shape", default="", help="reward weight overrides, e.g. death=8,dmg=0.02")
     ap.add_argument("--out", default="runs/local"); ap.add_argument("--save-every", type=int, default=50)
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(a.seed); np.random.seed(a.seed)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     weights = {k: float(v) for k, v in (x.split(":") for x in a.mix.split(","))}
+    shape = {k: float(v) for k, v in (x.split("=") for x in a.shape.split(",") if x)}
     net = EgoMemNet(a.hidden).to(dev)
     if a.init:
         net.load_state_dict(torch.load(a.init, map_location=dev, weights_only=True)["state"])
@@ -200,7 +205,7 @@ def main():
     shared = {k: v.detach().cpu().clone().share_memory_() for k, v in net.state_dict().items()}
     ctx = tmp.get_context("spawn"); pipes, procs = [], []
     for w in range(a.workers):
-        p1, p2 = ctx.Pipe(); pr = ctx.Process(target=worker, args=(p2, w, a.envs_per_worker, a.seed * 100003 + w, weights, shared, a.hidden), daemon=True)
+        p1, p2 = ctx.Pipe(); pr = ctx.Process(target=worker, args=(p2, w, a.envs_per_worker, a.seed * 100003 + w, weights, shared, a.hidden, shape), daemon=True)
         pr.start(); pipes.append(p1); procs.append(pr)
     for p in pipes:
         assert p.recv() == "ready"
