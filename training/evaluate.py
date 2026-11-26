@@ -35,13 +35,11 @@ def run_one(job):
     sys.path.insert(0, str(ROOT / "submission"))
     import agent as agent_mod
     agent_mod.TEMPERATURE = temp
-    if Path(weights).name == "egomem.pt":
-        agent_mod.WEIGHTS_DIR = Path(weights).parent
+    import shutil as _sh                                   # load ANY checkpoint (incl. vision) exactly as the scorer would
+    wdir = Path(tmp) / f"w_{os.getpid()}"; wdir.mkdir(exist_ok=True); _sh.copy(weights, wdir / "egomem.pt")
+    agent_mod.WEIGHTS_DIR = wdir
     env = make_env(wad, m, episode_ticks=ticks, render_buffers=True)   # like the scorer
     ag = agent_mod.DoomAgent(env.observation_space, env.action_space, "cpu")
-    if Path(weights).name != "egomem.pt":
-        import torch as T
-        ag.net.load_state_dict(T.load(weights, map_location="cpu", weights_only=True)["state"])
     obs, _ = env.reset(seed=idx if isinstance(idx, int) else 0); ag.reset(); sh = Shaper(env)
     t0 = time.time(); n = 0; worst = 0.0
     while True:
