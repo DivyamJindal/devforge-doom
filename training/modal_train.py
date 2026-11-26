@@ -1,4 +1,4 @@
-"""Massively parallel training on Modal: each run = one container with a GPU learner and ~48 CPU cores of Doom.
+"""Massively parallel training on Modal: each run = one container with a GPU learner and ~36 CPU cores of Doom.
 
   modal run training/modal_train.py --runs "a:default,b:explore"         # launches runs in parallel (detached-safe)
   modal volume get egomem-runs a/egomem.pt submission/weights/egomem.pt  # pull a checkpoint any time
@@ -28,11 +28,11 @@ PRESETS = {
 }
 
 
-@app.function(gpu="L4", cpu=48, memory=98304, timeout=24 * 3600, volumes={"/vol": vol})
+@app.function(gpu=["A10G", "L4", "T4", "L40S"], cpu=36, memory=65536, timeout=24 * 3600, volumes={"/vol": vol})
 def train(name: str, preset: str, steps: float, workers: int, extra: list[str]):
     import subprocess, sys, threading, time
     out = f"/vol/{name}"
-    cmd = [sys.executable, "/repo/training/ppo.py", "--workers", str(workers), "--envs-per-worker", "3", "--steps", str(steps),
+    cmd = [sys.executable, "/repo/training/ppo.py", "--workers", str(workers), "--envs-per-worker", "6", "--steps", str(steps),
            "--out", out, "--save-every", "20", "--seed", str(abs(hash(name)) % 1000), *PRESETS[preset], *extra]
     stop = False
 
@@ -52,7 +52,7 @@ def train(name: str, preset: str, steps: float, workers: int, extra: list[str]):
 
 
 @app.local_entrypoint()
-def main(runs: str = "a:default", steps: float = 3e8, workers: int = 44, extra: str = ""):
+def main(runs: str = "a:default", steps: float = 3e8, workers: int = 32, extra: str = ""):
     calls = []
     for spec in runs.split(","):
         name, preset = spec.split(":")

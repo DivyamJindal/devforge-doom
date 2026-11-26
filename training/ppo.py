@@ -76,25 +76,50 @@ def make_map(rng: random.Random, weights: dict, wdir: Path, tag: str):
     return str(path), "MAP01", TIER_TICKS[tier], src
 
 
-def worker(conn, wid: int, n: int, seed: int, weights: dict):
+def worker(conn, wid: int, n: int, seed: int, weights: dict, repeat: int = 2):
+    """Steps n environments. Level loading is double-buffered: while a level is being played, the next one is generated
+    and booted in a background thread (ViZDoom releases the GIL), so a finished episode never stalls the batch.
+    Each level is played `repeat` times (a reset costs ~3 ms, a fresh level ~180 ms)."""
+    import threading
     os.environ["OMP_NUM_THREADS"] = "1"; torch.set_num_threads(1)
     from doom_env import make_env
     rng = random.Random(seed); wdir = Path(f"/tmp/egomem_maps/{seed}"); wdir.mkdir(parents=True, exist_ok=True)
     envs = [None] * n; feats = [Features() for _ in range(n)]; shapers = [None] * n; meta = [None] * n; ret = [0.0] * n
+    plays = [0] * n; spare = [None] * n; threads = [None] * n; counter = [0]
+    boot = threading.Lock()                       # ViZDoom instances must not boot concurrently in one process
 
-    def new_episode(i):
-        if envs[i] is not None:
-            envs[i].close()
+    def build(i, s):
+        r = random.Random(s)
         for _ in range(5):
             try:
-                wad, m, ticks, src = make_map(rng, weights, wdir, f"w{wid}_{i}")
-                envs[i] = make_env(wad, m, episode_ticks=ticks, render_buffers=False)
-                obs, _ = envs[i].reset(seed=rng.randrange(1 << 30)); break
-            except Exception as e:  # a rare bad level: just make another
-                print(f"[worker {wid}] map failed: {e}", flush=True)
-        feats[i].reset(); shapers[i] = Shaper(envs[i]); meta[i] = src; ret[i] = 0.0
+                counter[0] += 1
+                wad, m, ticks, src = make_map(r, weights, wdir, f"w{wid}_{i}_{counter[0]}")
+                with boot:
+                    e = make_env(wad, m, episode_ticks=ticks, render_buffers=False)
+                    obs, _ = e.reset(seed=r.randrange(1 << 30))
+                spare[i] = (e, obs, src); return
+            except Exception as ex:  # a rare bad level: just make another
+                print(f"[worker {wid}] map failed: {ex}", flush=True)
+
+    def prefetch(i):
+        threads[i] = threading.Thread(target=build, args=(i, rng.randrange(1 << 30)), daemon=True); threads[i].start()
+
+    def new_episode(i):
+        if envs[i] is not None and plays[i] < repeat:
+            obs, _ = envs[i].reset(seed=rng.randrange(1 << 30)); plays[i] += 1
+        else:
+            threads[i].join()
+            if envs[i] is not None:
+                old = envs[i].wad; envs[i].close()
+                if old.startswith(str(wdir)):
+                    Path(old).unlink(missing_ok=True)
+            envs[i], obs, meta[i] = spare[i]; plays[i] = 1
+            prefetch(i)
+        feats[i].reset(); shapers[i] = Shaper(envs[i]); ret[i] = 0.0
         return feats[i](obs)
 
+    for i in range(n):
+        prefetch(i)
     f = [new_episode(i) for i in range(n)]
     conn.send(stack(f))
     while True:
@@ -134,7 +159,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=8); ap.add_argument("--envs-per-worker", type=int, default=2)
     ap.add_argument("--steps", type=float, default=2e6); ap.add_argument("--T", type=int, default=64)
-    ap.add_argument("--epochs", type=int, default=3); ap.add_argument("--minibatches", type=int, default=4)
+    ap.add_argument("--epochs", type=int, default=3); ap.add_argument("--minibatches", type=int, default=2)
     ap.add_argument("--lr", type=float, default=3e-4); ap.add_argument("--gamma", type=float, default=0.995)
     ap.add_argument("--lam", type=float, default=0.95); ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--ent", type=float, default=0.02); ap.add_argument("--ent-end", type=float, default=0.003)
@@ -168,7 +193,7 @@ def main():
         for g in opt.param_groups:
             g["lr"] = a.lr * (1 - 0.8 * frac)
         ent_coef = a.ent + (a.ent_end - a.ent) * frac
-        buf = defaultdict(list); h0 = h.clone()
+        buf = defaultdict(list); h0 = h.clone(); tr0 = time.time(); t_env = 0.0
         for t in range(T):
             with torch.no_grad():
                 logits, val, h_new = net.step(to_t(cur), h)
@@ -181,7 +206,7 @@ def main():
             an = buf["act"][-1]; s = 0
             for p in pipes:
                 p.send(("step", an[s:s + a.envs_per_worker])); s += a.envs_per_worker
-            res = [p.recv() for p in pipes]
+            te = time.time(); res = [p.recv() for p in pipes]; t_env += time.time() - te
             cur = cat([r[0] for r in res]); rew = np.concatenate([r[1] for r in res]); done = np.concatenate([r[2] for r in res])
             for r in res:
                 for info in r[3]:
@@ -190,6 +215,7 @@ def main():
             buf["rew"].append(rew); buf["done"].append(done)
             starts_next = done.copy()
             h = h_new * (1 - torch.from_numpy(done).to(dev)).unsqueeze(-1)
+        t_roll = time.time() - tr0; tu0 = time.time()
         with torch.no_grad():
             _, last_v, _ = net.step(to_t(cur), h)
         last_v = last_v.cpu().numpy()
@@ -219,10 +245,10 @@ def main():
                 opt.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(net.parameters(), 0.5); opt.step()
                 stats["pl"].append(pl.item()); stats["vl"].append(vl.item()); stats["ent"].append(en.item())
                 stats["kl"].append(((ratio - 1) - torch.log(ratio)).mean().item())
-        total += N * T
+        total += N * T; t_upd = time.time() - tu0
         if upd % 5 == 0 or upd == 1:
             fps = total / (time.time() - t0)
-            line = f"upd {upd}/{n_updates} steps {total / 1e6:.2f}M fps {fps:.0f} ent {np.mean(stats['ent']):.2f} kl {np.mean(stats['kl']):.4f} vl {np.mean(stats['vl']):.3f}"
+            line = f"upd {upd}/{n_updates} steps {total / 1e6:.2f}M fps {fps:.0f} ent {np.mean(stats['ent']):.2f} kl {np.mean(stats['kl']):.4f} vl {np.mean(stats['vl']):.3f} [rollout {t_roll:.1f}s (env wait {t_env:.1f}s) update {t_upd:.1f}s]"
             for src in sorted(hist):
                 H = hist[src]
                 if H:
