@@ -28,7 +28,10 @@ mirror the four hidden tiers, so it cannot memorise any layout.
 | **Rotation** | Circular convolutions over the ray ring, so an obstacle "behind-left" is encoded the same way wherever it sits on the ring. |
 | **USE semantics** | USE fires on the button-down edge, so our action encoder pulses it (held USE is released every other step) and doors don't bounce. |
 
-**RL first.** The shipped policy is trained with our recurrent PPO. Following the organisers' guidance ("Behavioral Cloning / Imitation Learning → PPO fine-tuning" for keycard/door maps), we also bootstrap with DAgger from a training-only teacher (`training/expert.py`, which knows the generated map; the submitted agent never imports it), then fine-tune with PPO.
+**Pure RL ships.** The shipped policy is trained only with our recurrent PPO. Following the organisers' guidance
+("Behavioral Cloning / Imitation Learning → PPO fine-tuning") we also tried DAgger from a training-only teacher
+(`training/expert.py`, which knows the generated map and is never imported by `submission/`). Applied on top of our PPO agent,
+the imitating student scored *lower* (tier-3 keycards 0.23-0.39 per level vs 0.56), so the shipped weights are pure PPO.
 
 All decisions come from the trained network. There is no pathfinding, no hand-written rules and no aimbot; the agent
 samples from its learned action distribution with a fixed seed.
