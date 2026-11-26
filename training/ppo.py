@@ -76,10 +76,12 @@ def make_map(rng: random.Random, weights: dict, wdir: Path, tag: str):
     return str(path), "MAP01", TIER_TICKS[tier], src
 
 
-def worker(conn, wid: int, n: int, seed: int, weights: dict, repeat: int = 2):
+def worker(conn, wid: int, n: int, seed: int, weights: dict, shared: dict, hidden: int, repeat: int = 2):
     """Steps n environments. Level loading is double-buffered: while a level is being played, the next one is generated
     and booted in a background thread (ViZDoom releases the GIL), so a finished episode never stalls the batch.
-    Each level is played `repeat` times (a reset costs ~3 ms, a fresh level ~180 ms)."""
+    Each level is played `repeat` times (a reset costs ~3 ms, a fresh level ~180 ms).
+    The worker runs whole T-step rollouts with its own CPU copy of the policy (refreshed from shared memory at the start of
+    each rollout), so there is no per-step lock-step with the learner: a slow level load only delays this worker."""
     import threading
     os.environ["OMP_NUM_THREADS"] = "1"; torch.set_num_threads(1)
     from doom_env import make_env
@@ -120,25 +122,43 @@ def worker(conn, wid: int, n: int, seed: int, weights: dict, repeat: int = 2):
 
     for i in range(n):
         prefetch(i)
-    f = [new_episode(i) for i in range(n)]
-    conn.send(stack(f))
+    cur = [new_episode(i) for i in range(n)]
+    net = EgoMemNet(hidden); net.eval()
+    h = torch.zeros(n, hidden); start = np.ones(n, np.float32)
+    conn.send("ready")
     while True:
-        cmd, acts = conn.recv()
+        cmd, T = conn.recv()
         if cmd == "close":
             break
-        out, rews, dones, infos = [], np.zeros(n, np.float32), np.zeros(n, np.float32), []
-        for i in range(n):
-            obs, _, term, trunc, _ = envs[i].step(feats[i].button_vector(int(acts[i])))
-            ps = envs[i].privileged_state(); r = shapers[i](ps); ret[i] += r; rews[i] = r
-            if term or trunc:
-                s = shapers[i]
-                infos.append({"src": meta[i], "exit": float(ps["exit_reached"]), "dead": float(ps["dead"]), "kills": ps["kills"],
-                              "keys": int(np.sum(ps["keys"])), "doors": s.n_doors, "locks": s.n_locks, "cells": len(s.cells),
-                              "ret": ret[i], "len": ps["tic"]})
-                dones[i] = 1.0; out.append(new_episode(i))
-            else:
-                out.append(feats[i](obs))
-        conn.send((stack(out), rews, dones, infos))
+        net.load_state_dict(shared)
+        buf = defaultdict(list); h0 = h.clone(); infos = []
+        for t in range(T):
+            x = stack(cur)
+            with torch.no_grad():
+                logits, val, h = net.step({k: torch.from_numpy(v) for k, v in x.items()}, h)
+                dist = torch.distributions.Categorical(logits=logits); act = dist.sample(); logp = dist.log_prob(act)
+            for k, v in x.items():
+                buf[k].append(v)
+            buf["act"].append(act.numpy()); buf["logp"].append(logp.numpy()); buf["val"].append(val.numpy()); buf["start"].append(start.copy())
+            rews, dones = np.zeros(n, np.float32), np.zeros(n, np.float32)
+            for i in range(n):
+                obs, _, term, trunc, _ = envs[i].step(feats[i].button_vector(int(act[i])))
+                ps = envs[i].privileged_state(); r = shapers[i](ps); ret[i] += r; rews[i] = r
+                if term or trunc:
+                    sh = shapers[i]
+                    infos.append({"src": meta[i], "exit": float(ps["exit_reached"]), "dead": float(ps["dead"]), "kills": ps["kills"],
+                                  "keys": int(np.sum(ps["keys"])), "doors": sh.n_doors, "locks": sh.n_locks, "cells": len(sh.cells),
+                                  "ret": ret[i], "len": ps["tic"]})
+                    dones[i] = 1.0; cur[i] = new_episode(i)
+                else:
+                    cur[i] = feats[i](obs)
+            buf["rew"].append(rews); buf["done"].append(dones)
+            start = dones.copy(); h = h * (1 - torch.from_numpy(dones)).unsqueeze(-1)
+        with torch.no_grad():
+            _, last_v, _ = net.step({k: torch.from_numpy(v) for k, v in stack(cur).items()}, h)
+        outd = {k: np.stack(v) for k, v in buf.items()}
+        outd["h0"] = h0.numpy(); outd["last_v"] = last_v.numpy()
+        conn.send((outd, infos))
 
 
 class RunningStd:
@@ -176,60 +196,51 @@ def main():
     if a.init:
         net.load_state_dict(torch.load(a.init, map_location=dev, weights_only=True)["state"])
     opt = torch.optim.Adam(net.parameters(), lr=a.lr, eps=1e-5)
-    ctx = mp.get_context("spawn"); pipes, procs = [], []
+    import torch.multiprocessing as tmp
+    shared = {k: v.detach().cpu().clone().share_memory_() for k, v in net.state_dict().items()}
+    ctx = tmp.get_context("spawn"); pipes, procs = [], []
     for w in range(a.workers):
-        p1, p2 = ctx.Pipe(); pr = ctx.Process(target=worker, args=(p2, w, a.envs_per_worker, a.seed * 100003 + w, weights), daemon=True)
+        p1, p2 = ctx.Pipe(); pr = ctx.Process(target=worker, args=(p2, w, a.envs_per_worker, a.seed * 100003 + w, weights, shared, a.hidden), daemon=True)
         pr.start(); pipes.append(p1); procs.append(pr)
-    obs = [p.recv() for p in pipes]
-    cat = lambda lst: {k: np.concatenate([o[k] for o in lst]) for k in lst[0]}
-    cur = cat(obs); N = a.workers * a.envs_per_worker; T = a.T
-    to_t = lambda d: {k: torch.from_numpy(v).to(dev) for k, v in d.items()}
-    h = torch.zeros(N, a.hidden, device=dev); starts_next = np.ones(N, np.float32)
-    rstd = RunningStd(); disc = np.zeros(N); hist = defaultdict(lambda: deque(maxlen=300)); allhist = deque(maxlen=500)
+    for p in pipes:
+        assert p.recv() == "ready"
+    N = a.workers * a.envs_per_worker; T = a.T
+    rstd = RunningStd(); disc = np.zeros(N); hist = defaultdict(lambda: deque(maxlen=300))
     n_updates = int(a.steps // (N * T)); t0 = time.time(); total = 0
-    print(f"device {dev}  envs {N}  updates {n_updates}  params {sum(p.numel() for p in net.parameters()):,}", flush=True)
+    print(f"device {dev}  envs {N}  updates {n_updates}  params {sum(p.numel() for p in net.parameters()):,}  (async rollouts, policy lag 1)", flush=True)
+    for p in pipes:
+        p.send(("rollout", T))
     for upd in range(1, n_updates + 1):
         frac = (upd - 1) / max(n_updates - 1, 1)
         for g in opt.param_groups:
             g["lr"] = a.lr * (1 - 0.8 * frac)
         ent_coef = a.ent + (a.ent_end - a.ent) * frac
-        buf = defaultdict(list); h0 = h.clone(); tr0 = time.time(); t_env = 0.0
+        tr0 = time.time(); res = [p.recv() for p in pipes]; t_env = time.time() - tr0
+        sd = net.state_dict()                                  # workers are idle now: publish the latest weights,
+        for k in shared:                                       # then immediately start the next rollout while we learn
+            shared[k].copy_(sd[k].detach().cpu())
+        for p in pipes:
+            p.send(("rollout", T))
+        for r in res:
+            for info in r[1]:
+                hist[info["src"]].append(info)
+        buf = {k: np.concatenate([r[0][k] for r in res], axis=1) for k in res[0][0] if k not in ("h0", "last_v")}
+        h0 = torch.from_numpy(np.concatenate([r[0]["h0"] for r in res])).to(dev)
+        last_v = np.concatenate([r[0]["last_v"] for r in res])
         for t in range(T):
-            with torch.no_grad():
-                logits, val, h_new = net.step(to_t(cur), h)
-                act = torch.distributions.Categorical(logits=logits).sample()
-                logp = torch.distributions.Categorical(logits=logits).log_prob(act)
-            for k, v in cur.items():
-                buf[k].append(v)
-            buf["act"].append(act.cpu().numpy()); buf["logp"].append(logp.cpu().numpy()); buf["val"].append(val.cpu().numpy())
-            buf["start"].append(starts_next.copy())
-            an = buf["act"][-1]; s = 0
-            for p in pipes:
-                p.send(("step", an[s:s + a.envs_per_worker])); s += a.envs_per_worker
-            te = time.time(); res = [p.recv() for p in pipes]; t_env += time.time() - te
-            cur = cat([r[0] for r in res]); rew = np.concatenate([r[1] for r in res]); done = np.concatenate([r[2] for r in res])
-            for r in res:
-                for info in r[3]:
-                    hist[info["src"]].append(info); allhist.append(info)
-            disc = disc * a.gamma + rew; rstd.update(disc); disc[done > 0] = 0
-            buf["rew"].append(rew); buf["done"].append(done)
-            starts_next = done.copy()
-            h = h_new * (1 - torch.from_numpy(done).to(dev)).unsqueeze(-1)
-        t_roll = time.time() - tr0; tu0 = time.time()
-        with torch.no_grad():
-            _, last_v, _ = net.step(to_t(cur), h)
-        last_v = last_v.cpu().numpy()
-        rew = np.stack(buf["rew"]) / rstd.std; done = np.stack(buf["done"]); val = np.stack(buf["val"])
+            disc = disc * a.gamma + buf["rew"][t]; rstd.update(disc); disc[buf["done"][t] > 0] = 0
+        t_roll = t_env; tu0 = time.time()
+        rew = buf["rew"] / rstd.std; done = buf["done"]; val = buf["val"]
         adv = np.zeros_like(rew); gae = np.zeros(N)
         for t in reversed(range(T)):
             nv = last_v if t == T - 1 else val[t + 1]
             delta = rew[t] + a.gamma * nv * (1 - done[t]) - val[t]
             gae = delta + a.gamma * a.lam * (1 - done[t]) * gae; adv[t] = gae
         ret = adv + val
-        B = {k: torch.from_numpy(np.stack(buf[k])).to(dev) for k in ("ray", "ent", "mask", "scal")}
-        act_t = torch.from_numpy(np.stack(buf["act"])).to(dev); oldlp = torch.from_numpy(np.stack(buf["logp"])).to(dev)
+        B = {k: torch.from_numpy(buf[k]).to(dev) for k in ("ray", "ent", "mask", "scal")}
+        act_t = torch.from_numpy(buf["act"]).to(dev); oldlp = torch.from_numpy(buf["logp"]).to(dev)
         adv_t = torch.from_numpy(adv).float().to(dev); ret_t = torch.from_numpy(ret).float().to(dev)
-        st_t = torch.from_numpy(np.stack(buf["start"])).to(dev)
+        st_t = torch.from_numpy(buf["start"]).to(dev)
         idx = np.arange(N); mb = N // a.minibatches; stats = defaultdict(list)
         for _ in range(a.epochs):
             np.random.shuffle(idx)
@@ -248,7 +259,7 @@ def main():
         total += N * T; t_upd = time.time() - tu0
         if upd % 5 == 0 or upd == 1:
             fps = total / (time.time() - t0)
-            line = f"upd {upd}/{n_updates} steps {total / 1e6:.2f}M fps {fps:.0f} ent {np.mean(stats['ent']):.2f} kl {np.mean(stats['kl']):.4f} vl {np.mean(stats['vl']):.3f} [rollout {t_roll:.1f}s (env wait {t_env:.1f}s) update {t_upd:.1f}s]"
+            line = f"upd {upd}/{n_updates} steps {total / 1e6:.2f}M fps {fps:.0f} ent {np.mean(stats['ent']):.2f} kl {np.mean(stats['kl']):.4f} vl {np.mean(stats['vl']):.3f} [waited for rollout {t_env:.1f}s, update {t_upd:.1f}s]"
             for src in sorted(hist):
                 H = hist[src]
                 if H:
@@ -261,7 +272,7 @@ def main():
             ck = {"state": {k: v.cpu() for k, v in net.state_dict().items()}, "cfg": {"hidden": a.hidden}, "steps": total}
             torch.save(ck, out / "egomem.pt"); torch.save(ck, out / f"egomem_{total // 1000000}M.pt")
     for p in pipes:
-        p.send(("close", None))
+        p.recv(); p.send(("close", None))
 
 
 if __name__ == "__main__":
