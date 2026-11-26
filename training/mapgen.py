@@ -105,7 +105,7 @@ def _door_spots(g, rooms):
     return out
 
 
-def _bfs(g, start, passable):
+def _flood_fill(g, start, passable):
     H, W = len(g), len(g[0]); dist = {start: 0}; q = deque([start])
     while q:
         x, y = q.popleft()
@@ -122,7 +122,7 @@ def populate(rng: random.Random, g, rooms, tier: int) -> list[list[str]]:
     sx, sy, sw, sh = rooms[start_room]
     start = (sx + sw // 2, sy + sh // 2)
     open_ = lambda c: c != "#"
-    dist = _bfs(g, start, open_)
+    dist = _flood_fill(g, start, open_)
     # exit: a cell in the farthest room (by path length), against a wall
     far = max(range(len(rooms)), key=lambda r: dist.get((rooms[r][0] + rooms[r][2] // 2, rooms[r][1] + rooms[r][3] // 2), -1))
     if far == start_room and len(rooms) > 1:
@@ -143,7 +143,7 @@ def populate(rng: random.Random, g, rooms, tier: int) -> list[list[str]]:
     if tier >= 3:
         colours = rng.sample(["r", "b", "y"], k=rng.choice([1, 1, 2]))
         for col in colours:
-            reach = _bfs(g, start, lambda c: c not in "#RBY")
+            reach = _flood_fill(g, start, lambda c: c not in "#RBY")
             if exit_cell not in reach:
                 break
             # walk back from exit to find doors on the path; pick the one closest to the exit that disconnects it
@@ -152,7 +152,7 @@ def populate(rng: random.Random, g, rooms, tier: int) -> list[list[str]]:
             done = False
             for d in sorted(cand, key=lambda d: -reach[d]):
                 g[d[1]][d[0]] = col.upper()
-                side = _bfs(g, start, lambda c: c not in "#RBY")
+                side = _flood_fill(g, start, lambda c: c not in "#RBY")
                 if exit_cell not in side and len(side) > 12:
                     floor = [c for c in side if g[c[1]][c[0]] == "." and c != start and _is_room(rooms, *c)]
                     if not floor:

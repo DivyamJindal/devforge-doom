@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "submission")); sys.path.insert(0, str(ROOT / "training"))
 
 from policy import ACTIONS, MEM_CAP, N_ACT, N_SCALAR, NUM_RAYS, EgoMemNet, Features, place_signature, stack  # noqa: E402
-from mapgen import generate, to_udmf, layout, populate, _bfs  # noqa: E402
+from mapgen import generate, to_udmf, layout, populate, _flood_fill  # noqa: E402
 
 USE = 7
 
@@ -151,11 +151,11 @@ def test_locked_levels_are_solvable(seed, tmp_path):
     start = next((x, y) for y, r in enumerate(g) for x, c in enumerate(r) if c == "P")
     exit_ = next((x, y) for y, r in enumerate(g) for x, c in enumerate(r) if c == "E")
     keys = {c for r in g for c in r if c in "rby"}
-    reach = _bfs(g, start, lambda c: c not in "#RBY")
+    reach = _flood_fill(g, start, lambda c: c not in "#RBY")
     for k in keys:                                              # every key reachable without crossing locks
         kpos = next((x, y) for y, r in enumerate(g) for x, c in enumerate(r) if c == k)
         assert kpos in reach
-    full = _bfs(g, start, lambda c: c != "#")
+    full = _flood_fill(g, start, lambda c: c != "#")
     assert exit_ in full
 
 

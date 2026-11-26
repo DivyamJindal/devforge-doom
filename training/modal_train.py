@@ -29,8 +29,6 @@ PRESETS = {
     "smoke": ["--steps", "300000"],
     "polish": ["--lr", "3e-4", "--ent", "0.006", "--ent-end", "0.002", "--epochs", "4", "--minibatches", "4",
                "--mix", "gen0:0.05,gen1:0.15,gen2:0.2,gen3:0.35,gen4:0.2,freedoom:0.05"],
-    # imitation learning from the privileged teacher (training/dagger.py), then PPO fine-tunes with --init
-    "dagger": ["DAGGER", "--iters", "10", "--steps-per-iter", "1500000", "--train-steps", "3000", "--batch", "64"],
     "survive": ["--lr", "7e-4", "--ent", "0.01", "--ent-end", "0.002", "--epochs", "4", "--minibatches", "4",
                 "--mix", "gen0:0.3,gen1:0.1,gen2:0.2,gen3:0.25,gen4:0.05,freedoom:0.1", "--shape", "death=8,dmg=0.02,cell=0.08"],
 }
@@ -41,13 +39,8 @@ def train(name: str, preset: str, steps: float, workers: int, extra: list[str]):
     import subprocess, sys, threading, time
     out = f"/vol/{name}"
     extra = [x.replace("VOL:", "/vol/") for x in extra]          # e.g. --init VOL:d/egomem.pt
-    args = PRESETS[preset]
-    if args and args[0] == "DAGGER":
-        cmd = [sys.executable, "/repo/training/dagger.py", "--workers", str(workers), "--envs-per-worker", "6", "--out", out,
-               "--seed", str(abs(hash(name)) % 1000), *args[1:], *extra]
-    else:
-        cmd = [sys.executable, "/repo/training/ppo.py", "--workers", str(workers), "--envs-per-worker", "6", "--steps", str(steps),
-               "--out", out, "--save-every", "20", "--seed", str(abs(hash(name)) % 1000), *args, *extra]
+    cmd = [sys.executable, "/repo/training/ppo.py", "--workers", str(workers), "--envs-per-worker", "6", "--steps", str(steps),
+           "--out", out, "--save-every", "20", "--seed", str(abs(hash(name)) % 1000), *PRESETS[preset], *extra]
     stop = False
 
     def committer():
