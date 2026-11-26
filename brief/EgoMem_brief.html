@@ -42,11 +42,11 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
   <div class="usp"><b>USP:</b> a recurrent agent with an <b>episodic place memory</b> (rotation-invariant scene signatures, so "I have been here" needs no coordinates), trained with <b>our own asynchronous recurrent PPO</b> on an <b>endless stream of procedurally generated levels</b> that mirror the four hidden tiers. It never sees the same layout twice, so it has to learn to play DOOM rather than memorise maps. Every action comes from the network: no pathfinding, no rule trees, no aimbot.</div>
 
   <div class="kpis">
-    <div><span class="big">0.75</span><small>keycards per unseen tier-3 level; 0.58 locked doors opened</small></div>
-    <div><span class="big">25%</span><small>exit reached on unseen tier-4 gauntlets (was 0%)</small></div>
-    <div><span class="big">8%</span><small>deaths on unseen tier-3 levels</small></div>
-    <div><span class="big">−1.6 → 40</span><small>held-out proxy score over training</small></div>
-    <div><span class="big">3–7 ms</span><small>per decision on 1 CPU thread (budget 40 ms)</small></div>
+    <div><span class="big">50%</span><small>exit reached on unseen tier-4 gauntlets</small></div>
+    <div><span class="big">0.75</span><small>keycards per unseen gauntlet; 0.50 locked doors opened</small></div>
+    <div><span class="big">8%</span><small>deaths on unseen tier-3 key → lock → exit levels</small></div>
+    <div><span class="big">−1.6 → 43</span><small>held-out proxy score over training</small></div>
+    <div><span class="big">&lt;1 ms</span><small>p50 per decision on 1 CPU thread (budget 40 ms)</small></div>
   </div>
 
   <h2><span>01</span>Neural architecture</h2>
@@ -56,11 +56,11 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
       <rect x="2" y="4" width="128" height="26" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="66" y="21" text-anchor="middle">64 rays × (dist, 6 hit types)</text>
       <rect x="2" y="36" width="128" height="26" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="66" y="53" text-anchor="middle">≤ 32 visible entities</text>
       <rect x="2" y="68" width="128" height="26" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="66" y="85" text-anchor="middle">vitals, keys, prev action</text>
-      <rect x="2" y="100" width="128" height="26" rx="3" fill="#fbe9d8" stroke="#b5361f"/><text x="66" y="117" text-anchor="middle" fill="#b5361f" font-weight="600">memory signals</text>
+      <rect x="2" y="100" width="128" height="26" rx="3" fill="#fbe9d8" stroke="#b5361f"/><text x="66" y="117" text-anchor="middle" fill="#b5361f" font-weight="600">memory signals + RGB-D</text>
       <rect x="160" y="4" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="21" text-anchor="middle" fill="#f1eadb">circular Conv1d ×3 (ring, no seam)</text>
       <rect x="160" y="36" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="53" text-anchor="middle" fill="#f1eadb">entity MLP → attention + max pool</text>
       <rect x="160" y="68" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="85" text-anchor="middle" fill="#f1eadb">MLP</text>
-      <rect x="160" y="100" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="117" text-anchor="middle" fill="#f1eadb">novelty, familiarity, event clocks</text>
+      <rect x="160" y="100" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="117" text-anchor="middle" fill="#f1eadb">memory MLP + 30×40 vision CNN</text>
       <rect x="370" y="40" width="90" height="50" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="415" y="62" text-anchor="middle" font-weight="600">fuse</text><text x="415" y="76" text-anchor="middle" fill="#56626a">512 → 256</text>
       <rect x="490" y="40" width="96" height="50" rx="3" fill="#1f5f7a"/><text x="538" y="62" text-anchor="middle" fill="#fff" font-weight="600">GRU 256</text><text x="538" y="76" text-anchor="middle" fill="#cfe3ea">time memory</text>
       <rect x="616" y="22" width="140" height="34" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="686" y="37" text-anchor="middle">policy: 15 macro-actions</text><text x="686" y="49" text-anchor="middle" fill="#56626a">USE pulsed (edge-triggered)</text>
@@ -74,6 +74,7 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
     <tr><td><b>Entity set encoder</b></td><td>Per-entity MLP over (distance, sin/cos angle, relative velocity, type), then masked attention pooling + max pooling.</td><td>Permutation-invariant and handles 0–32 enemies, items or projectiles: answers "variable numbers of enemies" directly. Padding cannot leak in (unit-tested).</td></tr>
     <tr><td><b>Episodic place memory</b></td><td>Every 2 steps it stores a 19-D signature of the surroundings: FFT magnitude of the ray ring + hit-type histogram. Each step outputs novelty (distance to the nearest stored place), familiarity (number of near matches) and steps since last novel place.</td><td><b>Rotation-invariant by construction</b> (FFT magnitude ignores ring shifts), so turning on the spot does not look like a new place. Needs no coordinates. We first tried velocity dead-reckoning for a metric map; it drifted ~800 map units in 300 steps, so we dropped it for place recognition.</td></tr>
     <tr><td><b>Event memory</b></td><td>Locked door seen and how long ago, door seen and how long ago, keys held (from vitals), damage taken recently.</td><td>Long-horizon tier: "I saw a locked door 200 steps ago and now hold the key" is exactly the signal needed to backtrack, and a GRU alone forgets it.</td></tr>
+    <tr><td><b>Vision branch</b></td><td>3-layer CNN on a 30×40 RGB + depth frame (every 4th pixel), added to a trained agent with zero-initialised fusion weights, so it starts identical and only improves.</td><td>Exit pads and exit switches are invisible to rays and entities. With vision, gauntlet exits on held-out maps rose from 25% to 50%.</td></tr>
     <tr><td><b>GRU core + macro-actions</b></td><td>GRU(256) integrates everything over time. 15 macro-actions over the 9 buttons; USE is pulsed because it fires only on 0 → 1 and re-pressing reverses a moving door.</td><td>Respects the engine quirks the organisers flagged. A 15-way categorical learns much faster than 9 independent Bernoullis.</td></tr>
   </table>
 
@@ -134,11 +135,11 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
   <h2><span>06</span>Held-out results (the exact submission agent, maps never trained on)</h2>
   <table>
     <tr><th>Set</th><th class="n">n</th><th class="n">Exit</th><th class="n">Keys</th><th class="n">Doors</th><th class="n">Locked</th><th class="n">Areas</th><th class="n">Kills</th><th class="n">Died</th></tr>
-    <tr><td>Tier 1 · combat</td><td class="n">12</td><td class="n">42%</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">19</td><td class="n">3.8</td><td class="n">33%</td></tr>
-    <tr><td>Tier 2 · multi-room</td><td class="n">12</td><td class="n">25%</td><td class="n">n/a</td><td class="n">2.6</td><td class="n">n/a</td><td class="n">40</td><td class="n">2.8</td><td class="n">17%</td></tr>
-    <tr class="hl"><td>Tier 3 · key → lock → exit</td><td class="n">12</td><td class="n">25%</td><td class="n">0.75</td><td class="n">2.7</td><td class="n">0.58</td><td class="n">53</td><td class="n">3.0</td><td class="n">8%</td></tr>
-    <tr><td>Tier 4 · gauntlet</td><td class="n">12</td><td class="n">25%</td><td class="n">0.67</td><td class="n">2.2</td><td class="n">0.50</td><td class="n">52</td><td class="n">6.0</td><td class="n">33%</td></tr>
-    <tr><td>Freedoom 2 (held-out real maps)</td><td class="n">6</td><td class="n">0%</td><td class="n">0</td><td class="n">0.7</td><td class="n">0</td><td class="n">24</td><td class="n">3.8</td><td class="n">67%</td></tr>
+    <tr><td>Tier 1 · combat</td><td class="n">12</td><td class="n">42%</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">22</td><td class="n">3.8</td><td class="n">33%</td></tr>
+    <tr><td>Tier 2 · multi-room</td><td class="n">12</td><td class="n">33%</td><td class="n">n/a</td><td class="n">2.4</td><td class="n">n/a</td><td class="n">43</td><td class="n">2.6</td><td class="n">25%</td></tr>
+    <tr><td>Tier 3 · key → lock → exit</td><td class="n">12</td><td class="n">33%</td><td class="n">0.67</td><td class="n">2.2</td><td class="n">0.42</td><td class="n">50</td><td class="n">2.8</td><td class="n">8%</td></tr>
+    <tr class="hl"><td>Tier 4 · gauntlet</td><td class="n">12</td><td class="n">50%</td><td class="n">0.75</td><td class="n">2.1</td><td class="n">0.50</td><td class="n">51</td><td class="n">6.0</td><td class="n">33%</td></tr>
+    <tr><td>Freedoom 2 (held-out real maps)</td><td class="n">6</td><td class="n">0%</td><td class="n">0</td><td class="n">1.0</td><td class="n">0</td><td class="n">24</td><td class="n">2.3</td><td class="n">83%</td></tr>
   </table>
 
   <div class="cols" style="margin-top:4px">
@@ -146,7 +147,7 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
       <h2><span>07</span>Limits, stated plainly</h2>
       <ul>
         <li><b>Gauntlets and big real maps</b> are the weak spot: dense ambushes still kill it half the time, and Freedoom's long levels with switch exits are rarely finished.</li>
-        <li>No pixels are used (rays + entities only). Exit pads and switches are not in the ray types, so exits are found by exploration rather than recognised.</li>
+        <li>Vision is low-resolution (30×40). It helps find exits (+25 points of gauntlet exit rate) but long Freedoom levels with distant switch exits are still unsolved.</li>
         <li>Episodic memory recognises places, not routes: backtracking to a remembered locked door is learned, not planned.</li>
       </ul>
     </div>

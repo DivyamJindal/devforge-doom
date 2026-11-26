@@ -12,7 +12,8 @@ mirror the four hidden tiers, so it cannot memorise any layout.
   64 rays ───────► circular 1-D CNN (ring has no seam) ─┐
   32 entities ───► per-entity MLP → attention + max pool ┼─► fuse ─► GRU (256) ─► 15 macro-actions + value
   vitals, keys ──► MLP ─────────────────────────────────┤
-  memory ────────► episodic place memory + event memory ┘
+  memory ────────► episodic place memory + event memory ┤
+  RGB + depth ───► small CNN (30×40, sees exit pads/switches) ┘
                    (have I been here? locked door seen? how long ago? keys held? hurt recently?)
 ```
 
@@ -26,6 +27,7 @@ mirror the four hidden tiers, so it cannot memorise any layout.
 | **Combat and survival** | Permutation-invariant attention over visible entities (any number of enemies), damage-recency signal, and kill/damage reward terms. |
 | **Variable enemy count** | Masked attention pooling + max pooling over up to 32 entity slots. |
 | **Rotation** | Circular convolutions over the ray ring, so an obstacle "behind-left" is encoded the same way wherever it sits on the ring. |
+| **Exits are invisible to rays** | A small CNN on a 30×40 RGB + depth frame (vision branch). Exit pads and exit switches never appear in rays or entities, so the agent previously found exits only by stumbling onto them. Adding vision raised gauntlet exits from 25% to 50% on held-out maps. |
 | **USE semantics** | USE fires on the button-down edge, so our action encoder pulses it (held USE is released every other step) and doors don't bounce. |
 
 **Pure RL ships.** The shipped policy is trained only with our recurrent PPO. Following the organisers' guidance
@@ -54,17 +56,17 @@ samples from its learned action distribution with a fixed seed.
 
 ## Results (held-out maps, `training/evaluate.py`)
 
-The shipped weights come from RL (our recurrent PPO): run `h`, which is run `e` (~88M steps, curriculum with an easy
-tier-0 on-ramp) polished for 17M more steps on the key/lock and gauntlet tiers. Scored by the exact submission agent on levels it never saw: fresh generator
+The shipped weights come from RL (our recurrent PPO): run `v1`, which is run `h` (88M + 17M steps of ray/entity training)
+with the **vision branch** grafted on (zero-initialised, so it starts identical) and trained 36M more steps with pixels. Scored by the exact submission agent on levels it never saw: fresh generator
 seeds outside the training range, plus 6 Freedoom 2 maps excluded from training. Sampling temperature 0.75.
 
 | held-out set | n | exit reached | keycards | doors opened | locked doors | areas explored | kills | died |
 |---|---|---|---|---|---|---|---|---|
-| Tier 1, combat | 12 | 42% | n/a | n/a | n/a | 19 | 3.8 | 33% |
-| Tier 2, multi-room | 12 | 25% | n/a | 2.6 | n/a | 40 | 2.8 | 17% |
-| Tier 3, key → lock → exit | 12 | 25% | **0.75** | 2.7 | **0.58** | 53 | 3.0 | 8% |
-| Tier 4, gauntlet | 12 | 25% | **0.67** | 2.2 | **0.50** | 52 | 6.0 | 33% |
-| Freedoom 2 (real maps) | 6 | 0% | 0 | 0.7 | 0 | 24 | 3.8 | 67% |
+| Tier 1, combat | 12 | 42% | n/a | n/a | n/a | 22 | 3.8 | 33% |
+| Tier 2, multi-room | 12 | 33% | n/a | 2.4 | n/a | 43 | 2.6 | 25% |
+| Tier 3, key → lock → exit | 12 | 33% | **0.67** | 2.2 | **0.42** | 50 | 2.8 | 8% |
+| Tier 4, gauntlet | 12 | **50%** | **0.75** | 2.1 | **0.50** | 51 | 6.0 | 33% |
+| Freedoom 2 (real maps) | 6 | 0% | 0 | 1.0 | 0 | 24 | 2.3 | 83% |
 
 Learning curve on the same held-out suite (tier-weighted proxy of the scorer's categories):
 
@@ -73,7 +75,8 @@ Learning curve on the same held-out suite (tier-weighted proxy of the scorer's c
 | random policy | 0 | ≈ -3 |
 | run `d` | 4M | -1.6 |
 | run `e` | 88M | 32.3 |
-| run `h` (`e` polished on tiers 3-4) | 88M + 17M | **40.0** |
+| run `h` (`e` polished on tiers 3-4) | 88M + 17M | 40.0 |
+| **run `v1` (`h` + vision branch)** | **+36M** | **43.0** |
 
 Latency: 3-7 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
 exit of the template test map in 66 steps.
