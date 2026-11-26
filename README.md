@@ -51,17 +51,17 @@ samples from its learned action distribution with a fixed seed.
 
 ## Results (held-out maps, `training/evaluate.py`)
 
-The shipped weights come from **pure RL** (our recurrent PPO, ~83M environment steps, run `e`: warm-started from run
-`d`, curriculum with an easy tier-0 on-ramp). Scored by the exact submission agent on levels it never saw: fresh generator
+The shipped weights come from RL (our recurrent PPO): run `h`, which is run `e` (~88M steps, curriculum with an easy
+tier-0 on-ramp) polished for 17M more steps on the key/lock and gauntlet tiers. Scored by the exact submission agent on levels it never saw: fresh generator
 seeds outside the training range, plus 6 Freedoom 2 maps excluded from training. Sampling temperature 0.75.
 
 | held-out set | n | exit reached | keycards | doors opened | locked doors | areas explored | kills | died |
 |---|---|---|---|---|---|---|---|---|
-| Tier 1, combat | 8 | **75%** | n/a | n/a | n/a | 19 | 3.9 | 12% |
-| Tier 2, multi-room | 8 | 38% | n/a | 2.5 | n/a | 47 | 3.4 | 25% |
-| Tier 3, key → lock → exit | 8 | 25% | **0.50** | 1.9 | **0.38** | 40 | 2.5 | 12% |
-| Tier 4, gauntlet | 8 | 0% | 0.50 | 1.1 | 0.12 | 35 | 4.2 | 50% |
-| Freedoom 2 (real maps) | 6 | 0% | 0 | 1.0 | 0 | 28 | 2.8 | 100% |
+| Tier 1, combat | 12 | 42% | n/a | n/a | n/a | 19 | 3.8 | 33% |
+| Tier 2, multi-room | 12 | 25% | n/a | 2.6 | n/a | 40 | 2.8 | 17% |
+| Tier 3, key → lock → exit | 12 | 25% | **0.75** | 2.7 | **0.58** | 53 | 3.0 | 8% |
+| Tier 4, gauntlet | 12 | 25% | **0.67** | 2.2 | **0.50** | 52 | 6.0 | 33% |
+| Freedoom 2 (real maps) | 6 | 0% | 0 | 0.7 | 0 | 24 | 3.8 | 67% |
 
 Learning curve on the same held-out suite (tier-weighted proxy of the scorer's categories):
 
@@ -69,7 +69,8 @@ Learning curve on the same held-out suite (tier-weighted proxy of the scorer's c
 |---|---|---|
 | random policy | 0 | ≈ -3 |
 | run `d` | 4M | -1.6 |
-| run `e` | 83M | **30.2** |
+| run `e` | 88M | 32.3 |
+| run `h` (`e` polished on tiers 3-4) | 88M + 17M | **40.0** |
 
 Latency: 3-7 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
 exit of the template test map in 66 steps.
