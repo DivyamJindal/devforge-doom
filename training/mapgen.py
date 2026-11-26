@@ -3,7 +3,7 @@
 
   python training/mapgen.py --out /tmp/maps --n 8 --tier 3       # writes /tmp/maps/gen_*.wad and prints an ASCII preview
 
-Tiers mirror the hidden evaluation suite:
+Tiers mirror the hidden evaluation suite (tier 0 is an easy on-ramp for the curriculum: small, few monsters):
   1 combat     a few connected arenas, many monsters, health/ammo, exit
   2 explore    6-12 rooms, corridors, doors, dead ends, exit far from the start
   3 progress   like 2 plus 1-2 key -> locked door chains guarding the exit (keys in side branches)
@@ -134,7 +134,7 @@ def populate(rng: random.Random, g, rooms, tier: int) -> list[list[str]]:
     # doors
     spots = _door_spots(g, rooms)
     rng.shuffle(spots)
-    n_doors = 0 if tier == 1 else min(len(spots), rng.randint(2, 6))
+    n_doors = 0 if tier == 1 else min(len(spots), rng.randint(0, 2) if tier == 0 else rng.randint(2, 6))
     doors = spots[:n_doors]
     for x, y in doors:
         g[y][x] = "D"
@@ -167,7 +167,7 @@ def populate(rng: random.Random, g, rooms, tier: int) -> list[list[str]]:
     floor = [(x, y) for y in range(H) for x in range(W) if g[y][x] == "." and abs(x - start[0]) + abs(y - start[1]) > 4]
     rng.shuffle(floor)
     n_cells = len(floor)
-    density = {1: 0.06, 2: 0.025, 3: 0.025, 4: 0.05}[tier]
+    density = {0: 0.012, 1: 0.06, 2: 0.025, 3: 0.025, 4: 0.05}[tier]
     n_mon = max(1, int(n_cells * density * rng.uniform(0.6, 1.4)))
     item_mul = 0.5 if tier == 4 else 1.0
     n_items = {"h": int(n_cells * 0.012 * item_mul) + 1, "a": int(n_cells * 0.015 * item_mul) + 1,
@@ -285,7 +285,7 @@ def generate(seed: int, tier: int, path: str | Path) -> list[str]:
     rng = random.Random(seed * 7919 + tier)
     for attempt in range(20):
         g, rooms = layout(rng, tier)
-        if len(rooms) < (2 if tier == 1 else 4):
+        if len(rooms) < (2 if tier <= 1 else 4):
             continue
         g = populate(rng, g, rooms, tier)
         has_key = any(c in "rby" for row in g for c in row)

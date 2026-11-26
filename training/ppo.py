@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "submission")); sys.path.insert(0, str(ROOT / "training"))
 from policy import EgoMemNet, Features, N_ACT, stack  # noqa: E402
 
-TIER_TICKS = {1: 2100, 2: 3150, 3: 4200, 4: 4200}
+TIER_TICKS = {0: 2100, 1: 2100, 2: 3150, 3: 4200, 4: 4200}
 FREEDOOM_TRAIN = [f"MAP{i:02d}" for i in range(1, 33) if i not in (2, 7, 11, 16, 23, 29)]  # those 6 held out for eval
 FREEDOOM_EVAL = ["MAP02", "MAP07", "MAP11", "MAP16", "MAP23", "MAP29"]
 

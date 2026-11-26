@@ -24,6 +24,8 @@ PRESETS = {
     "explore": ["--ent", "0.03", "--mix", "gen1:0.15,gen2:0.3,gen3:0.3,gen4:0.15,freedoom:0.1"],
     "progress": ["--mix", "gen1:0.15,gen2:0.2,gen3:0.4,gen4:0.15,freedoom:0.1", "--gamma", "0.997"],
     "big": ["--hidden", "384"],
+    "fast": ["--lr", "7e-4", "--ent", "0.01", "--ent-end", "0.002", "--epochs", "4", "--minibatches", "4",
+             "--mix", "gen0:0.3,gen1:0.1,gen2:0.2,gen3:0.25,gen4:0.05,freedoom:0.1"],
     "smoke": ["--steps", "300000"],
 }
 
