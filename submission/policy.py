@@ -194,24 +194,53 @@ def warm_start(net: "EgoMemNet", state: dict) -> None:
     net.load_state_dict(own)
 
 
-class EgoMemNet(nn.Module):
-    def __init__(self, hidden: int = 256, vision: bool = False, omap: bool = False):
-        super().__init__()
-        self.hidden, self.vision, self.omap = hidden, vision, omap
-        self.ray = nn.Sequential(
+# Encoders subclass nn.Sequential so parameter names (ray.0.weight, ...) match every checkpoint we trained.
+class RayRingEncoder(nn.Sequential):
+    """64-ray ring (distance + one-hot hit type) -> 256. Circular padding: the ring has no seam."""
+
+    def __init__(self):
+        super().__init__(
             nn.Conv1d(1 + N_HIT, 32, 5, padding=2, padding_mode="circular"), nn.ReLU(),
             nn.Conv1d(32, 48, 5, stride=2, padding=2, padding_mode="circular"), nn.ReLU(),
             nn.Conv1d(48, 48, 3, stride=2, padding=1, padding_mode="circular"), nn.ReLU(),
             nn.Flatten(), nn.Linear(48 * 16, 256), nn.ReLU())
-        self.ent = nn.Sequential(nn.Linear(5 + N_ETYPE, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU())
+
+
+class EntityEncoder(nn.Sequential):
+    """One visible thing (distance, bearing, velocity, type) -> 64; shared over all slots, pooled by EgoMemNet."""
+
+    def __init__(self):
+        super().__init__(nn.Linear(5 + N_ETYPE, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU())
+
+
+class VisionEncoder(nn.Sequential):
+    """4 x 30 x 40 RGB + depth -> 128: sees what rays cannot (exit pads and switches, key and door colours)."""
+
+    def __init__(self):
+        super().__init__(nn.Conv2d(4, 16, 5, stride=2, padding=2), nn.ReLU(), nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),
+                         nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 4 * 5, 128), nn.ReLU())
+
+
+class OccupancyEncoder(nn.Sequential):
+    """4 x 21 x 21 ego occupancy crop -> 128: walls, doors and unexplored gaps beyond the current view."""
+
+    def __init__(self):
+        super().__init__(nn.Conv2d(OM_C, 16, 3, padding=1), nn.ReLU(), nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),
+                         nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 6 * 6, 128), nn.ReLU())
+
+
+class EgoMemNet(nn.Module):
+    def __init__(self, hidden: int = 256, vision: bool = False, omap: bool = False):
+        super().__init__()
+        self.hidden, self.vision, self.omap = hidden, vision, omap
+        self.ray = RayRingEncoder()
+        self.ent = EntityEncoder()
         self.ent_score = nn.Linear(64, 1)
         self.scal = nn.Sequential(nn.Linear(N_SCALAR, 128), nn.ReLU())
         if vision:   # sees what rays cannot: exit pads/switches, door and key colours, lighting
-            self.vis = nn.Sequential(nn.Conv2d(4, 16, 5, stride=2, padding=2), nn.ReLU(), nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),
-                                     nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 4 * 5, 128), nn.ReLU())
+            self.vis = VisionEncoder()
         if omap:     # ego occupancy map: where walls, doors and unexplored gaps are, beyond the current view
-            self.om = nn.Sequential(nn.Conv2d(OM_C, 16, 3, padding=1), nn.ReLU(), nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),
-                                    nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 6 * 6, 128), nn.ReLU())
+            self.om = OccupancyEncoder()
         self.fuse = nn.Sequential(nn.Linear(256 + 128 + 128 + (128 if vision else 0) + (128 if omap else 0), hidden), nn.ReLU())
         self.gru = nn.GRUCell(hidden, hidden)
         self.pi = nn.Linear(hidden, N_ACT); self.v = nn.Linear(hidden, 1)
