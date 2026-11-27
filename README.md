@@ -56,22 +56,23 @@ samples from its learned action distribution with a fixed seed.
 
 ## Results (held-out maps, `training/evaluate.py`)
 
-The shipped weights come from RL (our recurrent PPO): run `v3`, which is run `h` (88M + 17M steps of ray/entity training)
-with the **vision branch** grafted on (zero-initialised, so it starts identical) and trained 39M more steps with pixels
-using the `polish` preset (tier 3-4 heavy level mix, lr 3e-4) plus the curiosity bonus (`v1` was the same graft, an
-independent run). Scored by the exact submission agent on levels it never saw: fresh generator
-seeds outside the training range, plus 6 Freedoom 2 maps excluded from training. Sampling temperature 0.75.
+The shipped weights come from RL (our recurrent PPO): run `om2` = run `v3` (ray/entity network + vision branch, see the
+curve below) with the **ego occupancy map** grafted on (zero-initialised, so it starts identical to v3) and trained 26M more
+steps with training-only path-distance shaping and 25% wall-switch exits. Scored by the exact submission agent on levels
+it never saw: fresh generator seeds outside the training range, plus 6 Freedoom 2 maps excluded from training.
+Sampling temperature 0.75.
 
 | held-out set | n | exit reached | keycards | doors opened | locked doors | areas explored | kills | died |
 |---|---|---|---|---|---|---|---|---|
-| Tier 1, combat | 24 | 54% | n/a | n/a | n/a | 22 | 4.3 | 17% |
-| Tier 2, multi-room | 24 | **50%** | n/a | 2.7 | n/a | 46 | 3.5 | 12% |
-| Tier 3, key → lock → exit | 24 | 33% | **0.71** | 2.6 | **0.50** | 53 | 3.8 | 12% |
-| Tier 4, gauntlet | 24 | 33% | **0.71** | 2.1 | **0.54** | 46 | 6.8 | 25% |
-| Freedoom 2 (real maps) | 6 | 0% | 0 | 1.5 | 0 | 26 | 3.2 | 83% |
+| Tier 1, combat | 24 | 62% | n/a | n/a | n/a | 18 | 3.7 | 29% |
+| Tier 2, multi-room | 24 | **75%** | n/a | 2.7 | n/a | 42 | 3.0 | 12% |
+| Tier 3, key → lock → exit | 24 | **58%** | **0.88** | 2.7 | **0.67** | 45 | 2.8 | 21% |
+| Tier 4, gauntlet | 24 | 33% | 0.58 | 1.9 | 0.42 | 38 | 5.4 | 46% |
+| Freedoom 2 (real maps) | 6 | 0% | 0 | 0.7 | 0 | 26 | 2.2 | 67% |
 
 Re-check on a **fresh block of seeds never used for any decision** (`--seed0 950000000`, 32 levels per tier, paired):
-v3 scores **41.8** vs v1 35.3 and is ahead on every tier (exits 56/31/28/25% vs 47/22/25/19%). Of the levels v3 does not
+om2 **42.4**, v3 41.8, v1 35.3. Exits per tier: om2 62/75/50/22%, v3 56/31/28/25%, v1 47/22/25/19%. The occupancy map
+more than doubles multi-room exits; the gauntlet (dense ambushes) is where it still dies most. Of the levels v3 did not
 finish, about 40% end in death and 60% in a timeout, so both survival and navigation still have headroom.
 
 Learning curve on the same held-out suite (tier-weighted proxy of the scorer's categories; 12 maps per tier, noise about ±4, so ship decisions use 24 per tier):
@@ -83,7 +84,8 @@ Learning curve on the same held-out suite (tier-weighted proxy of the scorer's c
 | run `e` | 88M | 32.3 |
 | run `h` (`e` polished on tiers 3-4) | 88M + 17M | 40.0 |
 | run `v1` (`h` + vision branch) | +36M | 43.0 (41.2 on 24/tier) |
-| **run `v3` (`h` + vision branch, shipped)** | **+39M** | **45.3 (45.5 on 24/tier)** |
+| run `v3` (`h` + vision branch) | +39M | 45.3 (45.5 on 24/tier) |
+| **run `om2` (`v3` + occupancy map + path shaping, shipped)** | **+26M** | **45.0 on 24/tier, exits 62/75/58/33%** |
 
 Latency: 2-5 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
 exit of the template test map in 59 steps.
@@ -97,14 +99,14 @@ Adding observation-based action masks and a "stuck for 200 tics ends the episode
 way (`v6`) ended at a held-out 39 vs v3's 45: the policy was trained without them, so they are off by default now
 (`--masks`, `--shape stuck_tics=0`).
 
-**Built and training now (not in the shipped weights yet):** an ego-centric occupancy map (`--omap`). Heading is
+**Ego-centric occupancy map (shipped in `om2`):** (`--omap`). Heading is
 dead-reckoned from the agent's own turn presses with DOOM's exact turn model (5 slow tics at 1.76 deg, then 3.52 deg/tic,
 checked against ground truth in `tests/`), position from the observed velocity (fit on ground truth, about 0.6 map
 units of error per step). Rays paint free space, walls and doors into a world grid; a 21x21 crop rotated to the agent's
 heading feeds a small CNN, zero-initialised so it starts identical to v3. Also training-only path-distance shaping
 (`--shape geo=0.1`: reward for getting closer, along the level's corridors, to the next missing key or the exit) and
-levels whose exit is a wall switch (`--switch 0.25`), as in real DOOM maps. These ship only if they beat v3 on held-out
-levels.
+levels whose exit is a wall switch (`--switch 0.25`), as in real DOOM maps. They shipped because they beat v3 on two held-out
+suites. Path shaping without the map (run `geo2`) scored lower (42.5), so the map is what makes it work.
 
 ## Run it
 
