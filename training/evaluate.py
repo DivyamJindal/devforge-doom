@@ -26,12 +26,12 @@ def run_one(job):
     from doom_env import make_env
     from ppo import Shaper, TIER_TICKS
     import vizdoom as vd
-    src, idx, weights, tmp, temp = job
+    src, idx, weights, tmp, temp, seed0, switch = job
     if src == "freedoom":
         wad, m, ticks = os.path.join(os.path.dirname(vd.__file__), "freedoom2.wad"), idx, 4200
     else:
         from mapgen import generate
-        tier = int(src[-1]); wad = f"{tmp}/{src}_{idx}.wad"; generate(EVAL_SEED0 + idx, tier, wad); m, ticks = "MAP01", TIER_TICKS[tier]
+        tier = int(src[-1]); wad = f"{tmp}/{src}_{idx}.wad"; generate(seed0 + idx, tier, wad, exit_switch=switch); m, ticks = "MAP01", TIER_TICKS[tier]
     sys.path.insert(0, str(ROOT / "submission"))
     import agent as agent_mod
     agent_mod.TEMPERATURE = temp
@@ -62,12 +62,14 @@ def main():
     ap.add_argument("--per-tier", type=int, default=12); ap.add_argument("--procs", type=int, default=8)
     ap.add_argument("--no-freedoom", action="store_true"); ap.add_argument("--json", default=None)
     ap.add_argument("--temp", type=float, default=1.0)
+    ap.add_argument("--seed0", type=int, default=EVAL_SEED0, help="first level seed (use another block for an unbiased re-check)")
+    ap.add_argument("--switch", action="store_true", help="generated levels end at a wall switch instead of an exit pad")
     a = ap.parse_args()
     from ppo import FREEDOOM_EVAL
     tmp = "/tmp/egomem_eval"; shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp)
-    jobs = [(f"gen{t}", i, a.weights, tmp, a.temp) for t in (1, 2, 3, 4) for i in range(a.per_tier)]
+    jobs = [(f"gen{t}", i, a.weights, tmp, a.temp, a.seed0, a.switch) for t in (1, 2, 3, 4) for i in range(a.per_tier)]
     if not a.no_freedoom:
-        jobs += [("freedoom", m, a.weights, tmp, a.temp) for m in FREEDOOM_EVAL]
+        jobs += [("freedoom", m, a.weights, tmp, a.temp, a.seed0, a.switch) for m in FREEDOOM_EVAL]
     with Pool(a.procs) as p:
         res = p.map(run_one, jobs, chunksize=1)
     print(f"weights: {a.weights}  temperature {a.temp}")
@@ -78,6 +80,9 @@ def main():
         rows[src] = {k: float(np.mean([r[k] for r in R])) for k in ("exit", "keys", "doors", "locks", "cells", "kills", "dead", "proxy", "ms_per_step")}
         x = rows[src]
         print(f"{src:9s} {len(R):3d} {x['exit']:5.2f} {x['keys']:5.2f} {x['doors']:5.1f} {x['locks']:5.2f} {x['cells']:6.1f} {x['kills']:5.1f} {x['dead']:5.2f} {x['proxy']:6.1f} {x['ms_per_step']:8.2f}")
+    fail = [r for r in res if not r["exit"]]
+    print(f"no exit: {len(fail)}/{len(res)}  died {sum(r['dead'] > 0 for r in fail)}  "
+          f"timed out {sum(r['dead'] == 0 for r in fail)}")
     w = {"gen1": 1, "gen2": 2, "gen3": 3, "gen4": 4, "freedoom": 4}
     total = sum(w[s] * rows[s]["proxy"] for s in rows) / sum(w[s] for s in rows)
     print(f"tier-weighted proxy score: {total:.1f}   worst act(): {max(r['worst_ms'] for r in res):.1f} ms")

@@ -36,8 +36,8 @@ FREEDOOM_EVAL = ["MAP02", "MAP07", "MAP11", "MAP16", "MAP23", "MAP29"]
 class Shaper:
     """Shaped reward from ground truth. Mirrors the evaluation categories."""
 
-    W = {"cell": 0.06, "kill": 1.0, "item": 0.15, "key": 4.0, "dmg": 0.006, "door": 1.0, "lock": 3.0, "exit": 15.0, "death": 4.0, "time": 0.002, "curio": 0.02, "stuck": 1.0, "geo": 0.0}
-    STUCK_TICS = 200          # no new area / kill / key / door for this long -> -1 and the episode is cut (wasted time)
+    W = {"cell": 0.06, "kill": 1.0, "item": 0.15, "key": 4.0, "dmg": 0.006, "door": 1.0, "lock": 3.0, "exit": 15.0, "death": 4.0, "time": 0.002, "curio": 0.02, "stuck": 1.0, "stuck_tics": 200, "geo": 0.0}
+    # stuck_tics: no new area / kill / key / door for this long -> -1 and the episode is cut (0 disables)
 
     KEY_IDX = {"b": 0, "y": 1, "r": 2}   # vitals/privileged key order: Blue, Yellow, Red cards
 
@@ -89,7 +89,7 @@ class Shaper:
         if progress != getattr(self, "_prog", progress):
             self.last_progress = ps["tic"]
         self._prog = progress
-        if ps["tic"] - self.last_progress > Shaper.STUCK_TICS and not ps["exit_reached"]:
+        if w["stuck_tics"] and ps["tic"] - self.last_progress > w["stuck_tics"] and not ps["exit_reached"]:
             self.stuck = True; r -= w["stuck"]
         r += w["kill"] * (ps["kills"] - self.kills); self.kills = ps["kills"]
         r += w["item"] * max(0, ps["items"] - self.items); self.items = ps["items"]
