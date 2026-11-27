@@ -205,3 +205,12 @@ def test_running_std():
     from ppo import RunningStd
     r = RunningStd(); x = np.random.default_rng(0).normal(0, 3, 10000); r.update(x)
     assert abs(r.std - 3) < 0.1
+
+
+def test_exit_switch_variant(tmp_path):
+    """Opt-in switch exits: a USE-able wall switch (special 243) and no walk-over exit line; default maps unchanged."""
+    from mapgen import generate
+    a = generate(11, 2, tmp_path / "a.wad"); generate(11, 2, tmp_path / "s.wad", exit_switch=True)
+    txt = (tmp_path / "s.wad").read_bytes().decode("latin1")
+    assert "special = 243; playeruse = true" in txt and "special = 243; playercross" not in txt
+    assert a == generate(11, 2, tmp_path / "b.wad")

@@ -182,7 +182,7 @@ def populate(rng: random.Random, g, rooms, tier: int) -> list[list[str]]:
 
 
 # ----------------------------------------------------------------------------------- UDMF writer
-def to_udmf(g, rng: random.Random) -> str:
+def to_udmf(g, rng: random.Random, exit_switch: bool = False) -> str:
     H, W = len(g), len(g[0])
     floor_tex, wall_tex = rng.choice(FLOOR_TEX), rng.choice(WALL_TEX)
     ceil_h = rng.choice([128, 128, 160, 192])
@@ -196,7 +196,7 @@ def to_udmf(g, rng: random.Random) -> str:
                 continue
             if c in "DRBYE":                                   # every door / exit cell gets its own sector
                 sec_of[(x, y)] = len(sectors)
-                tex = {"E": "GATE3"}.get(c, "FLAT5_4")
+                tex = {"E": floor_tex if exit_switch else "GATE3"}.get(c, "FLAT5_4")
                 hc = ceil_h if c == "E" else 0
                 sectors.append(f'sector {{ texturefloor = "{tex}"; textureceiling = "CEIL1_1"; heightfloor = 0; heightceiling = {hc}; lightlevel = {light}; }}')
             else:
@@ -227,6 +227,10 @@ def to_udmf(g, rng: random.Random) -> str:
                                      ((x, y + 1), (x + 1, wy), (x, wy)),             # south
                                      ((x - 1, y), (x, wy), (x, wy + 1))):            # west
                 if (nx, ny) not in sec_of:
+                    if exit_switch and c == "E":                 # classic DOOM exit: a wall switch you USE
+                        s = side(a, "SW1COMP")
+                        lines.append(f"linedef {{ v1 = {V(*p1)}; v2 = {V(*p2)}; sidefront = {s}; blocking = true; special = 243; playeruse = true; }}")
+                        continue
                     s = side(a, wall_tex)
                     lines.append(f"linedef {{ v1 = {V(*p1)}; v2 = {V(*p2)}; sidefront = {s}; blocking = true; dontpegbottom = true; }}")
                     continue
@@ -246,7 +250,7 @@ def to_udmf(g, rng: random.Random) -> str:
                         lines.append(f"{head} special = 12; arg0 = 0; arg1 = 16; arg2 = 150; playeruse = true; monsteruse = false; repeatspecial = true; }}")
                     else:
                         lines.append(f"{head} special = 13; arg0 = 0; arg1 = 16; arg2 = 150; arg3 = {LOCK_NUM[nc]}; playeruse = true; repeatspecial = true; }}")
-                elif nc == "E":
+                elif nc == "E" and not exit_switch:
                     lines.append(f"{head} special = 243; playercross = true; }}")
                 else:
                     lines.append(f"{head} }}")
@@ -280,8 +284,22 @@ def write_wad(path: str | Path, textmap: str) -> None:
     Path(path).write_bytes(b"PWAD" + struct.pack("<ii", len(lumps), 12 + len(data)) + data + dirs)
 
 
-def generate(seed: int, tier: int, path: str | Path) -> list[str]:
-    """Write one level to `path` (MAP01). Returns the ASCII grid (for previews and curriculum stats)."""
+def _to_wall(g, cell):
+    """Nearest floor cell (from `cell`) that touches a wall, so a switch can be mounted there."""
+    q, seen = [cell], {cell}
+    for x, y in q:
+        if g[y][x] in ".E" and any(g[y + dy][x + dx] == "#" for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+            return x, y
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            n = (x + dx, y + dy)
+            if n not in seen and g[n[1]][n[0]] in ".E":
+                seen.add(n); q.append(n)
+    return cell
+
+
+def generate(seed: int, tier: int, path: str | Path, exit_switch: bool = False) -> list[str]:
+    """Write one level to `path` (MAP01). Returns the ASCII grid (for previews and curriculum stats).
+    exit_switch: the exit is a wall switch (USE it, like real DOOM maps) instead of a floor pad you walk onto."""
     rng = random.Random(seed * 7919 + tier)
     for attempt in range(20):
         g, rooms = layout(rng, tier)
@@ -291,7 +309,12 @@ def generate(seed: int, tier: int, path: str | Path) -> list[str]:
         has_key = any(c in "rby" for row in g for c in row)
         if any("E" in row for row in g) and (tier < 3 or has_key or attempt >= 15):
             break
-    write_wad(path, to_udmf(g, rng))
+    if exit_switch:
+        ex = next(((x, y) for y, row in enumerate(g) for x, c in enumerate(row) if c == "E"), None)
+        nx, ny = _to_wall(g, ex) if ex else (None, None)
+        if ex and (nx, ny) != ex:
+            g[ex[1]][ex[0]], g[ny][nx] = ".", "E"
+    write_wad(path, to_udmf(g, rng, exit_switch))
     return ["".join(r) for r in g]
 
 

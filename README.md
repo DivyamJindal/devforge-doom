@@ -56,19 +56,20 @@ samples from its learned action distribution with a fixed seed.
 
 ## Results (held-out maps, `training/evaluate.py`)
 
-The shipped weights come from RL (our recurrent PPO): run `v1`, which is run `h` (88M + 17M steps of ray/entity training)
-with the **vision branch** grafted on (zero-initialised, so it starts identical) and trained 36M more steps with pixels. Scored by the exact submission agent on levels it never saw: fresh generator
+The shipped weights come from RL (our recurrent PPO): run `v3`, which is run `h` (88M + 17M steps of ray/entity training)
+with the **vision branch** grafted on (zero-initialised, so it starts identical) and trained 39M more steps with pixels
+(`v1` was an earlier seed of the same recipe). Scored by the exact submission agent on levels it never saw: fresh generator
 seeds outside the training range, plus 6 Freedoom 2 maps excluded from training. Sampling temperature 0.75.
 
 | held-out set | n | exit reached | keycards | doors opened | locked doors | areas explored | kills | died |
 |---|---|---|---|---|---|---|---|---|
-| Tier 1, combat | 12 | 42% | n/a | n/a | n/a | 22 | 3.8 | 33% |
-| Tier 2, multi-room | 12 | 33% | n/a | 2.4 | n/a | 43 | 2.6 | 25% |
-| Tier 3, key → lock → exit | 12 | 33% | **0.67** | 2.2 | **0.42** | 50 | 2.8 | 8% |
-| Tier 4, gauntlet | 12 | **50%** | **0.75** | 2.1 | **0.50** | 51 | 6.0 | 33% |
-| Freedoom 2 (real maps) | 6 | 0% | 0 | 1.0 | 0 | 24 | 2.3 | 83% |
+| Tier 1, combat | 24 | 54% | n/a | n/a | n/a | 22 | 4.3 | 17% |
+| Tier 2, multi-room | 24 | **50%** | n/a | 2.7 | n/a | 46 | 3.5 | 12% |
+| Tier 3, key → lock → exit | 24 | 33% | **0.71** | 2.6 | **0.50** | 53 | 3.8 | 12% |
+| Tier 4, gauntlet | 24 | 33% | **0.71** | 2.1 | **0.54** | 46 | 6.8 | 25% |
+| Freedoom 2 (real maps) | 6 | 0% | 0 | 1.5 | 0 | 26 | 3.2 | 83% |
 
-Learning curve on the same held-out suite (tier-weighted proxy of the scorer's categories):
+Learning curve on the same held-out suite (tier-weighted proxy of the scorer's categories; 12 maps per tier, noise about ±4, so ship decisions use 24 per tier):
 
 | checkpoint | steps | proxy |
 |---|---|---|
@@ -76,9 +77,10 @@ Learning curve on the same held-out suite (tier-weighted proxy of the scorer's c
 | run `d` | 4M | -1.6 |
 | run `e` | 88M | 32.3 |
 | run `h` (`e` polished on tiers 3-4) | 88M + 17M | 40.0 |
-| **run `v1` (`h` + vision branch)** | **+36M** | **43.0** |
+| run `v1` (`h` + vision branch) | +36M | 43.0 (41.2 on 24/tier) |
+| **run `v3` (`h` + vision branch, shipped)** | **+39M** | **45.3 (45.5 on 24/tier)** |
 
-Latency: 3-7 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
+Latency: 2-5 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
 exit of the template test map in 66 steps.
 
 **What did not work, and why it matters.** Lock-step vectorised training was bottlenecked at ~1k steps/s by level loading;

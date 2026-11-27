@@ -45,7 +45,7 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
     <div><span class="big">50%</span><small>exit reached on unseen tier-4 gauntlets</small></div>
     <div><span class="big">0.75</span><small>keycards per unseen gauntlet; 0.50 locked doors opened</small></div>
     <div><span class="big">8%</span><small>deaths on unseen tier-3 key → lock → exit levels</small></div>
-    <div><span class="big">−1.6 → 43</span><small>held-out proxy score over training</small></div>
+    <div><span class="big">−1.6 → 45.5</span><small>held-out proxy score over training</small></div>
     <div><span class="big">&lt;1 ms</span><small>p50 per decision on 1 CPU thread (budget 40 ms)</small></div>
   </div>
 
@@ -135,18 +135,18 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
   <h2><span>06</span>Held-out results (the exact submission agent, maps never trained on)</h2>
   <table>
     <tr><th>Set</th><th class="n">n</th><th class="n">Exit</th><th class="n">Keys</th><th class="n">Doors</th><th class="n">Locked</th><th class="n">Areas</th><th class="n">Kills</th><th class="n">Died</th></tr>
-    <tr><td>Tier 1 · combat</td><td class="n">12</td><td class="n">42%</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">22</td><td class="n">3.8</td><td class="n">33%</td></tr>
-    <tr><td>Tier 2 · multi-room</td><td class="n">12</td><td class="n">33%</td><td class="n">n/a</td><td class="n">2.4</td><td class="n">n/a</td><td class="n">43</td><td class="n">2.6</td><td class="n">25%</td></tr>
-    <tr><td>Tier 3 · key → lock → exit</td><td class="n">12</td><td class="n">33%</td><td class="n">0.67</td><td class="n">2.2</td><td class="n">0.42</td><td class="n">50</td><td class="n">2.8</td><td class="n">8%</td></tr>
-    <tr class="hl"><td>Tier 4 · gauntlet</td><td class="n">12</td><td class="n">50%</td><td class="n">0.75</td><td class="n">2.1</td><td class="n">0.50</td><td class="n">51</td><td class="n">6.0</td><td class="n">33%</td></tr>
-    <tr><td>Freedoom 2 (held-out real maps)</td><td class="n">6</td><td class="n">0%</td><td class="n">0</td><td class="n">1.0</td><td class="n">0</td><td class="n">24</td><td class="n">2.3</td><td class="n">83%</td></tr>
+    <tr><td>Tier 1 · combat</td><td class="n">24</td><td class="n">54%</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">22</td><td class="n">4.3</td><td class="n">17%</td></tr>
+    <tr class="hl"><td>Tier 2 · multi-room</td><td class="n">24</td><td class="n">50%</td><td class="n">n/a</td><td class="n">2.7</td><td class="n">n/a</td><td class="n">46</td><td class="n">3.5</td><td class="n">12%</td></tr>
+    <tr><td>Tier 3 · key → lock → exit</td><td class="n">24</td><td class="n">33%</td><td class="n">0.71</td><td class="n">2.6</td><td class="n">0.5</td><td class="n">53</td><td class="n">3.8</td><td class="n">12%</td></tr>
+    <tr><td>Tier 4 · gauntlet</td><td class="n">24</td><td class="n">33%</td><td class="n">0.71</td><td class="n">2.1</td><td class="n">0.54</td><td class="n">46</td><td class="n">6.8</td><td class="n">25%</td></tr>
+    <tr><td>Freedoom 2 (held-out real maps)</td><td class="n">6</td><td class="n">0%</td><td class="n">0</td><td class="n">1.5</td><td class="n">0</td><td class="n">26</td><td class="n">3.2</td><td class="n">83%</td></tr>
   </table>
 
   <div class="cols" style="margin-top:4px">
     <div>
       <h2><span>07</span>Limits, stated plainly</h2>
       <ul>
-        <li><b>Gauntlets and big real maps</b> are the weak spot: dense ambushes still kill it half the time, and Freedoom's long levels with switch exits are rarely finished.</li>
+        <li><b>Gauntlets and big real maps</b> are the weak spot: dense ambushes still kill it a quarter of the time, and Freedoom's long levels with switch exits are rarely finished.</li>
         <li>Vision is low-resolution (30×40). It helps find exits (+25 points of gauntlet exit rate) but long Freedoom levels with distant switch exits are still unsolved.</li>
         <li>Episodic memory recognises places, not routes: backtracking to a remembered locked door is learned, not planned.</li>
       </ul>
