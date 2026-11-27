@@ -70,6 +70,10 @@ seeds outside the training range, plus 6 Freedoom 2 maps excluded from training.
 | Tier 4, gauntlet | 24 | 33% | **0.71** | 2.1 | **0.54** | 46 | 6.8 | 25% |
 | Freedoom 2 (real maps) | 6 | 0% | 0 | 1.5 | 0 | 26 | 3.2 | 83% |
 
+Re-check on a **fresh block of seeds never used for any decision** (`--seed0 950000000`, 32 levels per tier, paired):
+v3 scores **41.8** vs v1 35.3 and is ahead on every tier (exits 56/31/28/25% vs 47/22/25/19%). Of the levels v3 does not
+finish, about 40% end in death and 60% in a timeout, so both survival and navigation still have headroom.
+
 Learning curve on the same held-out suite (tier-weighted proxy of the scorer's categories; 12 maps per tier, noise about ±4, so ship decisions use 24 per tier):
 
 | checkpoint | steps | proxy |
