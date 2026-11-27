@@ -92,6 +92,19 @@ exit of the template test map in 59 steps.
 asynchronous workers with double-buffered level boot raised it to ~5k steps/s per run. Velocity dead-reckoning for a
 metric map drifted too much to be useful, which is why the memory is episodic and place-based. A higher sampling
 temperature (1.0) and a lower one (0.5) both scored slightly worse than 0.75.
+Adding observation-based action masks and a "stuck for 200 tics ends the episode" rule to an already-trained policy
+(both borrowed from another team) cut its training-time exit rate from about 30% to 6% on the first update and the run
+never recovered (held-out 39 vs 45): the policy was trained without them, so they are off by default now
+(`--masks`, `--shape stuck_tics=0`).
+
+**Built and training now (not in the shipped weights yet):** an ego-centric occupancy map (`--omap`). Heading is
+dead-reckoned from the agent's own turn presses with DOOM's exact turn model (5 slow tics at 1.76 deg, then 3.52 deg/tic,
+checked against ground truth in `tests/`), position from the observed velocity (fit on ground truth, about 0.6 map
+units of error per step). Rays paint free space, walls and doors into a world grid; a 21x21 crop rotated to the agent's
+heading feeds a small CNN, zero-initialised so it starts identical to v3. Also training-only path-distance shaping
+(`--shape geo=0.1`: reward for getting closer, along the level's corridors, to the next missing key or the exit) and
+levels whose exit is a wall switch (`--switch 0.25`), as in real DOOM maps. These ship only if they beat v3 on held-out
+levels.
 
 ## Run it
 
