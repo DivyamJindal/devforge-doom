@@ -42,10 +42,10 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
   <div class="usp"><b>USP:</b> a recurrent agent with an <b>episodic place memory</b> (rotation-invariant scene signatures, so "I have been here" needs no coordinates) and a <b>self-drawn ego occupancy map</b> (heading dead-reckoned from its own turn presses with DOOM's exact turn model), trained with <b>our own asynchronous recurrent PPO</b> on an <b>endless stream of procedurally generated levels</b> that mirror the four hidden tiers. It never sees the same layout twice, so it has to learn to play DOOM rather than memorise maps. Every action comes from the network: no pathfinding, no rule trees, no aimbot.</div>
 
   <div class="kpis">
-    <div><span class="big">58%</span><small>exit reached on unseen tier-3 key → lock → exit levels</small></div>
-    <div><span class="big">0.92</span><small>keycards per unseen tier-3 level; 0.75 locked doors opened</small></div>
+    <div><span class="big">58%</span><small>exit reached on unseen tier-4 gauntlets (was 25%)</small></div>
+    <div><span class="big">62%</span><small>exit reached on unseen tier-3 key → lock → exit levels</small></div>
     <div><span class="big">8%</span><small>deaths on unseen tier-2 multi-room levels</small></div>
-    <div><span class="big">83%</span><small>multi-room exits on unseen levels (was 31%)</small></div>
+    <div><span class="big">88%</span><small>multi-room exits on unseen levels (was 31%)</small></div>
     <div><span class="big">&lt;1 ms</span><small>p50 per decision on 1 CPU thread (budget 40 ms)</small></div>
   </div>
 
@@ -71,7 +71,7 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
   <table>
     <tr><th style="width:22%">Component</th><th style="width:37%">What it does</th><th>Why (vs the usual approach)</th></tr>
     <tr><td><b>Circular ray CNN</b></td><td>3 Conv1d layers with circular padding over the 64-ray ring (distance + one-hot hit type: wall, door, locked door, enemy, item).</td><td>The ring has no start or end. A plain CNN or MLP treats ray 0 and ray 63 as far apart; ours sees an obstacle behind-left the same wherever it falls.</td></tr>
-    <tr><td><b>Ego occupancy map</b></td><td>The agent paints free space, walls and doors from its rays into its own world grid, using heading dead-reckoned from its turn presses (5 slow tics at 1.76°, then 3.52°/tic, exact against ground truth) and position from its velocity. A 21×21 crop rotated to its heading feeds a small CNN.</td><td>Memory of where corridors and unexplored gaps are, beyond the current view. Grafted onto v3 at zero weight, then trained: multi-room exits 31% → 78%, key/lock 28% → 56% on fresh levels.</td></tr>
+    <tr><td><b>Ego occupancy map</b></td><td>The agent paints free space, walls and doors from its rays into its own world grid, using heading dead-reckoned from its turn presses (5 slow tics at 1.76°, then 3.52°/tic, exact against ground truth) and position from its velocity. A 21×21 crop rotated to its heading feeds a small CNN.</td><td>Memory of where corridors and unexplored gaps are, beyond the current view. Grafted onto v3 at zero weight, then trained: multi-room exits 31% → 81%, key/lock 28% → 69% on fresh levels.</td></tr>
     <tr><td><b>Entity set encoder</b></td><td>Per-entity MLP over (distance, sin/cos angle, relative velocity, type), then masked attention pooling + max pooling.</td><td>Permutation-invariant and handles 0–32 enemies, items or projectiles: answers "variable numbers of enemies" directly. Padding cannot leak in (unit-tested).</td></tr>
     <tr><td><b>Episodic place memory</b></td><td>Every 2 steps it stores a 19-D signature of the surroundings: FFT magnitude of the ray ring + hit-type histogram. Each step outputs novelty (distance to the nearest stored place), familiarity (number of near matches) and steps since last novel place.</td><td><b>Rotation-invariant by construction</b> (FFT magnitude ignores ring shifts), so turning on the spot does not look like a new place. Needs no coordinates. Velocity alone drifted ~800 map units in 300 steps; the occupancy map fixes heading exactly from turn presses, which keeps drift under 150 units over 150 steps (tested).</td></tr>
     <tr><td><b>Event memory</b></td><td>Locked door seen and how long ago, door seen and how long ago, keys held (from vitals), damage taken recently.</td><td>Long-horizon tier: "I saw a locked door 200 steps ago and now hold the key" is exactly the signal needed to backtrack, and a GRU alone forgets it.</td></tr>
@@ -136,18 +136,18 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
   <h2><span>06</span>Held-out results (the exact submission agent, maps never trained on)</h2>
   <table>
     <tr><th>Set</th><th class="n">n</th><th class="n">Exit</th><th class="n">Keys</th><th class="n">Doors</th><th class="n">Locked</th><th class="n">Areas</th><th class="n">Kills</th><th class="n">Died</th></tr>
-    <tr><td>Tier 1 · combat</td><td class="n">24</td><td class="n">79%</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">18</td><td class="n">3.4</td><td class="n">21%</td></tr>
-    <tr class="hl"><td>Tier 2 · multi-room</td><td class="n">24</td><td class="n">83%</td><td class="n">n/a</td><td class="n">3.0</td><td class="n">n/a</td><td class="n">48</td><td class="n">3.4</td><td class="n">8%</td></tr>
-    <tr class="hl"><td>Tier 3 · key → lock → exit</td><td class="n">24</td><td class="n">58%</td><td class="n">0.92</td><td class="n">2.9</td><td class="n">0.75</td><td class="n">50</td><td class="n">3.4</td><td class="n">17%</td></tr>
-    <tr><td>Tier 4 · gauntlet</td><td class="n">24</td><td class="n">42%</td><td class="n">0.83</td><td class="n">2.2</td><td class="n">0.71</td><td class="n">43</td><td class="n">5.9</td><td class="n">46%</td></tr>
-    <tr><td>Freedoom 2 (held-out real maps)</td><td class="n">6</td><td class="n">0%</td><td class="n">0</td><td class="n">1.2</td><td class="n">0</td><td class="n">31</td><td class="n">2.8</td><td class="n">50%</td></tr>
+    <tr><td>Tier 1 · combat</td><td class="n">24</td><td class="n">62%</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">n/a</td><td class="n">17</td><td class="n">3.2</td><td class="n">29%</td></tr>
+    <tr class="hl"><td>Tier 2 · multi-room</td><td class="n">24</td><td class="n">88%</td><td class="n">n/a</td><td class="n">3.0</td><td class="n">n/a</td><td class="n">42</td><td class="n">3.1</td><td class="n">8%</td></tr>
+    <tr class="hl"><td>Tier 3 · key → lock → exit</td><td class="n">24</td><td class="n">62%</td><td class="n">0.79</td><td class="n">3.2</td><td class="n">0.75</td><td class="n">53</td><td class="n">3.2</td><td class="n">12%</td></tr>
+    <tr class="hl"><td>Tier 4 · gauntlet</td><td class="n">24</td><td class="n">58%</td><td class="n">0.88</td><td class="n">2.5</td><td class="n">0.67</td><td class="n">56</td><td class="n">7.5</td><td class="n">29%</td></tr>
+    <tr><td>Freedoom 2 (held-out real maps)</td><td class="n">6</td><td class="n">0%</td><td class="n">0</td><td class="n">1.2</td><td class="n">0</td><td class="n">21</td><td class="n">2.5</td><td class="n">67%</td></tr>
   </table>
 
   <div class="cols" style="margin-top:4px">
     <div>
       <h2><span>07</span>Limits, stated plainly</h2>
       <ul>
-        <li><b>Gauntlets and big real maps</b> are the weak spot: dense ambushes still kill it almost half the time, and Freedoom's long levels with switch exits are rarely finished.</li>
+        <li><b>Gauntlets and big real maps</b> are the weak spot: dense ambushes still kill it about a third of the time, and Freedoom's long levels with switch exits are rarely finished.</li>
         <li>Vision is low-resolution (30×40). It helps (proxy 40.0 without pixels, 45 with them) but long Freedoom levels with distant switch exits are still unsolved.</li>
         <li>Episodic memory recognises places, not routes: backtracking to a remembered locked door is learned, not planned.</li>
       </ul>
