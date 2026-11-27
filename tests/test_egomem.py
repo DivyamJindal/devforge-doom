@@ -1,4 +1,5 @@
 """Tests for our agent, features, memory, level generator and training utilities. Run: uv run pytest -q tests/test_egomem.py"""
+import json
 import random
 import sys
 from pathlib import Path
@@ -263,3 +264,29 @@ def test_geodesic_shaping_rewards_approaching_the_exit():
     sh = Shaper.__new__(Shaper); sh.fields = Shaper._fields(["#####", "#P.E#", "#####"]); sh.geo_d = sh.geo_phase = None
     at = lambda gx: {"x": (gx + 0.5) * 64, "y": 1.5 * 64, "keys": np.zeros(6)}
     assert sh._geo(at(1)) == 0.0 and sh._geo(at(2)) == 1.0 and sh._geo(at(1)) == -1.0
+
+
+# ------------------------------------------------------------------ paired checkpoint comparison
+def _eval_json(path, proxies):
+    maps = [{"src": s, "map": str(i), "exit": float(p > 40), "proxy": p} for s, ps in proxies.items() for i, p in enumerate(ps)]
+    path.write_text(json.dumps({"maps": maps}))
+    return str(path)
+
+
+def test_compare_detects_a_clear_improvement_and_not_noise(tmp_path):
+    from compare import bootstrap, load, paired, weighted
+    base = {"gen1": [30, 50, 20, 60], "gen4": [10, 40, 35, 25]}
+    better = {s: [p + 10 for p in ps] for s, ps in base.items()}
+    a = load(_eval_json(tmp_path / "a.json", base)); b = load(_eval_json(tmp_path / "b.json", better))
+    d = paired(a, b)
+    assert weighted(d) == pytest.approx(10.0) and bootstrap(d, 200)[0] > 0
+    noisy = {s: [p + (5 if i % 2 else -5) for i, p in enumerate(ps)] for s, ps in base.items()}
+    lo, hi = bootstrap(paired(a, load(_eval_json(tmp_path / "c.json", noisy))), 400)
+    assert lo < 0 < hi
+
+
+def test_masked_entity_pool_is_permutation_invariant():
+    from policy import MaskedEntityPool
+    torch.manual_seed(0); e = torch.randn(1, 6, 8); sc = torch.randn(1, 6); m = torch.tensor([[1, 1, 1, 0, 0, 0.0]])
+    p = torch.tensor([2, 0, 1, 5, 3, 4])
+    assert torch.allclose(MaskedEntityPool()(e, sc, m), MaskedEntityPool()(e[:, p], sc[:, p], m[:, p]), atol=1e-6)

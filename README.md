@@ -71,7 +71,9 @@ Sampling temperature 0.75.
 | Freedoom 2 (real maps) | 6 | 0% | 0 | 1.2 | 0 | 31 | 2.8 | 50% |
 
 Re-check on a **fresh block of seeds never used for any decision** (`--seed0 950000000`, 32 levels per tier, paired):
-om2@35M **47.5**, om2@25M 42.4, v3 41.8, v1 35.3. Exits per tier: om2@35M 59/78/56/31%, om2@25M 62/75/50/22%, v3 56/31/28/25%, v1 47/22/25/19%. The occupancy map
+om2@35M **47.5**, om2@25M 42.4, v3 41.8, v1 35.3. Exits per tier: om2@35M 59/78/56/31%, om2@25M 62/75/50/22%, v3 56/31/28/25%, v1 47/22/25/19%. `training/compare.py` pairs the two
+runs level by level and bootstraps the difference: om2@35M beats v3 by **+5.8 (90% CI +0.2 .. +11.6)** and om2@25M by
++5.1 (+1.1 .. +9.3), so the gains are not seed luck. The occupancy map
 more than doubles multi-room exits; the gauntlet (dense ambushes) is where it still dies most. Of the levels v3 did not
 finish, about 40% end in death and 60% in a timeout, so both survival and navigation still have headroom.
 

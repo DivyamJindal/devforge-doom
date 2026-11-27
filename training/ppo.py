@@ -62,7 +62,8 @@ class Shaper:
         return out, len(grid), CELL
 
     def _geo(self, ps) -> float:
-        """Potential-based progress toward the next objective (a missing key, else the exit). Training only."""
+        """Potential-based shaping (Ng et al. 1999: phi = -path distance, so it cannot change the optimal policy) toward
+        the next objective (a missing key, else the exit). Uses the generator's grid, so it is training only."""
         fields, H, cell = self.fields
         held = np.asarray(ps["keys"])
         todo = [k for k in fields if k != "E" and not held[Shaper.KEY_IDX[k]]]

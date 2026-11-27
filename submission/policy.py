@@ -229,13 +229,23 @@ class OccupancyEncoder(nn.Sequential):
                          nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 6 * 6, 128), nn.ReLU())
 
 
+class MaskedEntityPool(nn.Module):
+    """Set encoder pooling (Deep Sets style): attention-weighted sum + max over the visible entities only.
+    Permutation-invariant and indifferent to how many enemies/items are visible; empty slots never leak in."""
+
+    def forward(self, e, scores, mask):
+        s = scores.masked_fill(mask < 0.5, -1e9)
+        att = torch.softmax(s, -1) * (mask.sum(-1, keepdim=True) > 0)
+        return torch.cat([(att.unsqueeze(-1) * e).sum(1), (e - (1 - mask.unsqueeze(-1)) * 1e4).max(1).values.clamp(min=0)], -1)
+
+
 class EgoMemNet(nn.Module):
     def __init__(self, hidden: int = 256, vision: bool = False, omap: bool = False):
         super().__init__()
         self.hidden, self.vision, self.omap = hidden, vision, omap
         self.ray = RayRingEncoder()
         self.ent = EntityEncoder()
-        self.ent_score = nn.Linear(64, 1)
+        self.ent_score = nn.Linear(64, 1); self.pool = MaskedEntityPool()
         self.scal = nn.Sequential(nn.Linear(N_SCALAR, 128), nn.ReLU())
         if vision:   # sees what rays cannot: exit pads/switches, door and key colours, lighting
             self.vis = VisionEncoder()
@@ -248,9 +258,7 @@ class EgoMemNet(nn.Module):
 
     def embed(self, ray, ent, mask, scal, img=None, omap=None):
         e = self.ent(ent)                                                   # [N,32,64]
-        s = self.ent_score(e).squeeze(-1).masked_fill(mask < 0.5, -1e9)
-        att = torch.softmax(s, -1) * (mask.sum(-1, keepdim=True) > 0)
-        pooled = torch.cat([(att.unsqueeze(-1) * e).sum(1), (e - (1 - mask.unsqueeze(-1)) * 1e4).max(1).values.clamp(min=0)], -1)
+        pooled = self.pool(e, self.ent_score(e).squeeze(-1), mask)
         parts = [self.ray(ray), pooled, self.scal(scal)]
         if self.vision:
             parts.append(self.vis(img.float() / 255.0))
