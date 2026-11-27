@@ -58,7 +58,8 @@ samples from its learned action distribution with a fixed seed.
 
 The shipped weights come from RL (our recurrent PPO): run `v3`, which is run `h` (88M + 17M steps of ray/entity training)
 with the **vision branch** grafted on (zero-initialised, so it starts identical) and trained 39M more steps with pixels
-(`v1` was an earlier seed of the same recipe). Scored by the exact submission agent on levels it never saw: fresh generator
+using the `polish` preset (tier 3-4 heavy level mix, lr 3e-4) plus the curiosity bonus (`v1` was the same graft, an
+independent run). Scored by the exact submission agent on levels it never saw: fresh generator
 seeds outside the training range, plus 6 Freedoom 2 maps excluded from training. Sampling temperature 0.75.
 
 | held-out set | n | exit reached | keycards | doors opened | locked doors | areas explored | kills | died |
@@ -81,7 +82,7 @@ Learning curve on the same held-out suite (tier-weighted proxy of the scorer's c
 | **run `v3` (`h` + vision branch, shipped)** | **+39M** | **45.3 (45.5 on 24/tier)** |
 
 Latency: 2-5 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
-exit of the template test map in 66 steps.
+exit of the template test map in 59 steps.
 
 **What did not work, and why it matters.** Lock-step vectorised training was bottlenecked at ~1k steps/s by level loading;
 asynchronous workers with double-buffered level boot raised it to ~5k steps/s per run. Velocity dead-reckoning for a
