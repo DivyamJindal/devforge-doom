@@ -57,21 +57,21 @@ samples from its learned action distribution with a fixed seed.
 ## Results (held-out maps, `training/evaluate.py`)
 
 The shipped weights come from RL (our recurrent PPO): run `om2` = run `v3` (ray/entity network + vision branch, see the
-curve below) with the **ego occupancy map** grafted on (zero-initialised, so it starts identical to v3) and trained 26M more
-steps with training-only path-distance shaping and 25% wall-switch exits. Scored by the exact submission agent on levels
+curve below) with the **ego occupancy map** grafted on (zero-initialised, so it starts identical to v3) and trained 35M more
+steps with training-only path-distance shaping and 25% wall-switch exits (shipped snapshot: 35M steps). Scored by the exact submission agent on levels
 it never saw: fresh generator seeds outside the training range, plus 6 Freedoom 2 maps excluded from training.
 Sampling temperature 0.75.
 
 | held-out set | n | exit reached | keycards | doors opened | locked doors | areas explored | kills | died |
 |---|---|---|---|---|---|---|---|---|
-| Tier 1, combat | 24 | 62% | n/a | n/a | n/a | 18 | 3.7 | 29% |
-| Tier 2, multi-room | 24 | **75%** | n/a | 2.7 | n/a | 42 | 3.0 | 12% |
-| Tier 3, key → lock → exit | 24 | **58%** | **0.88** | 2.7 | **0.67** | 45 | 2.8 | 21% |
-| Tier 4, gauntlet | 24 | 33% | 0.58 | 1.9 | 0.42 | 38 | 5.4 | 46% |
-| Freedoom 2 (real maps) | 6 | 0% | 0 | 0.7 | 0 | 26 | 2.2 | 67% |
+| Tier 1, combat | 24 | 79% | n/a | n/a | n/a | 18 | 3.4 | 21% |
+| Tier 2, multi-room | 24 | **83%** | n/a | 3.0 | n/a | 48 | 3.4 | 8% |
+| Tier 3, key → lock → exit | 24 | **58%** | **0.92** | 2.9 | **0.75** | 50 | 3.4 | 17% |
+| Tier 4, gauntlet | 24 | 42% | 0.83 | 2.2 | 0.71 | 43 | 5.9 | 46% |
+| Freedoom 2 (real maps) | 6 | 0% | 0 | 1.2 | 0 | 31 | 2.8 | 50% |
 
 Re-check on a **fresh block of seeds never used for any decision** (`--seed0 950000000`, 32 levels per tier, paired):
-om2 **42.4**, v3 41.8, v1 35.3. Exits per tier: om2 62/75/50/22%, v3 56/31/28/25%, v1 47/22/25/19%. The occupancy map
+om2@35M **47.5**, om2@25M 42.4, v3 41.8, v1 35.3. Exits per tier: om2@35M 59/78/56/31%, om2@25M 62/75/50/22%, v3 56/31/28/25%, v1 47/22/25/19%. The occupancy map
 more than doubles multi-room exits; the gauntlet (dense ambushes) is where it still dies most. Of the levels v3 did not
 finish, about 40% end in death and 60% in a timeout, so both survival and navigation still have headroom.
 
@@ -85,7 +85,8 @@ Learning curve on the same held-out suite (tier-weighted proxy of the scorer's c
 | run `h` (`e` polished on tiers 3-4) | 88M + 17M | 40.0 |
 | run `v1` (`h` + vision branch) | +36M | 43.0 (41.2 on 24/tier) |
 | run `v3` (`h` + vision branch) | +39M | 45.3 (45.5 on 24/tier) |
-| **run `om2` (`v3` + occupancy map + path shaping, shipped)** | **+26M** | **45.0 on 24/tier, exits 62/75/58/33%** |
+| run `om2` @ 25M (`v3` + occupancy map + path shaping) | +26M | 45.0 on 24/tier |
+| **run `om2` @ 35M (shipped)** | **+35M** | **53.3 on 24/tier, exits 79/83/58/42%** |
 
 Latency: 2-5 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
 exit of the template test map in 59 steps.
