@@ -93,6 +93,15 @@ Learning curve on the same held-out suite (tier-weighted proxy of the scorer's c
 Latency: 2-5 ms per decision on one CPU thread (budget 40 ms); the official validator passes, and the agent reaches the
 exit of the template test map in 59 steps.
 
+**Where it still fails** (`training/diagnose.py` on the fresh-seed run): of all held-out levels, 54% end at the exit,
+34% in death, 11% lost (explored a lot, never reached the exit) and 1% stuck. Death dominates the gauntlet (53%),
+so survival, not navigation, is the next thing to train.
+
+**Tooling for honest ship decisions:** `training/evaluate.py` (held-out levels, `--seed0` for a fresh block),
+`training/compare.py` (paired per-level bootstrap CI between two checkpoints), `training/diagnose.py` (failure
+causes and worst levels to replay with `training/watch.py`), `training/ship.py` (installs a checkpoint only if it loads
+strictly in the submission agent and the official validator + tests pass; restores the old weights otherwise).
+
 **What did not work, and why it matters.** Lock-step vectorised training was bottlenecked at ~1k steps/s by level loading;
 asynchronous workers with double-buffered level boot raised it to ~5k steps/s per run. Velocity dead-reckoning for a
 metric map drifted too much to be useful, which is why the memory is episodic and place-based. A higher sampling

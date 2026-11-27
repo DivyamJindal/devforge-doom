@@ -3,7 +3,8 @@
   python training/ppo.py --workers 8 --envs-per-worker 2 --steps 2000000 --out runs/local
 
 Design
-- Worker processes each run several official `doom_env` instances (same observations as evaluation, pixels off).
+- Vectorised environments: worker processes each run several official `doom_env` instances (same observations as
+  evaluation) and step them as one batch; workers collect asynchronously from a shared-memory copy of the policy.
   Every episode starts on a NEW level: procedurally generated (training/mapgen.py, tiers 1-4) or a Freedoom 2 map,
   so the agent can only succeed by generalising, never by memorising a layout.
 - Intrinsic episodic curiosity (in the spirit of NGU): a small bonus whenever the agent's own place memory says the
@@ -11,7 +12,9 @@ Design
 - Rewards are shaped from `privileged_state()` (training only; the agent never sees it): new areas reached,
   kills, pickups, keycards, doors and locked doors opened, the exit (plus a time/health bonus), minus damage
   and death. This mirrors the hidden scorer's categories (exit > progression > exploration > combat).
-- PPO with GAE, a GRU policy trained by backprop-through-time over whole rollout segments, return-based reward
+  Optional potential-based shaping (`--shape geo=0.1`): phi = -path distance to the next missing key or the exit.
+- Recurrent PPO with GAE: the GRU hidden state is carried through each rollout, reset at episode starts, and the
+  GRU policy is trained by backprop-through-time (BPTT) over whole rollout segments, return-based reward
   scaling, entropy annealing. Batched inference on the GPU; environments on all CPU cores.
 """
 from __future__ import annotations

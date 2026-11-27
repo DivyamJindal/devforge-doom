@@ -194,8 +194,22 @@ def warm_start(net: "EgoMemNet", state: dict) -> None:
     net.load_state_dict(own)
 
 
-# Encoders subclass nn.Sequential so parameter names (ray.0.weight, ...) match every checkpoint we trained.
-class RayRingEncoder(nn.Sequential):
+class LayerStack(nn.Module):
+    """Runs its layers in order. Layers are registered as "0", "1", ... so parameter names (ray.0.weight, ...) match
+    every checkpoint we have trained."""
+
+    def __init__(self, *layers: nn.Module):
+        super().__init__()
+        for i, layer in enumerate(layers):
+            self.add_module(str(i), layer)
+
+    def forward(self, x):
+        for layer in self.children():
+            x = layer(x)
+        return x
+
+
+class RayRingEncoder(LayerStack):
     """64-ray ring (distance + one-hot hit type) -> 256. Circular padding: the ring has no seam."""
 
     def __init__(self):
@@ -206,14 +220,14 @@ class RayRingEncoder(nn.Sequential):
             nn.Flatten(), nn.Linear(48 * 16, 256), nn.ReLU())
 
 
-class EntityEncoder(nn.Sequential):
+class EntityEncoder(LayerStack):
     """One visible thing (distance, bearing, velocity, type) -> 64; shared over all slots, pooled by EgoMemNet."""
 
     def __init__(self):
         super().__init__(nn.Linear(5 + N_ETYPE, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU())
 
 
-class VisionEncoder(nn.Sequential):
+class VisionEncoder(LayerStack):
     """4 x 30 x 40 RGB + depth -> 128: sees what rays cannot (exit pads and switches, key and door colours)."""
 
     def __init__(self):
@@ -221,7 +235,7 @@ class VisionEncoder(nn.Sequential):
                          nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 4 * 5, 128), nn.ReLU())
 
 
-class OccupancyEncoder(nn.Sequential):
+class OccupancyEncoder(LayerStack):
     """4 x 21 x 21 ego occupancy crop -> 128: walls, doors and unexplored gaps beyond the current view."""
 
     def __init__(self):

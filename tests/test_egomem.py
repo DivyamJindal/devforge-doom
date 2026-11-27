@@ -290,3 +290,70 @@ def test_masked_entity_pool_is_permutation_invariant():
     torch.manual_seed(0); e = torch.randn(1, 6, 8); sc = torch.randn(1, 6); m = torch.tensor([[1, 1, 1, 0, 0, 0.0]])
     p = torch.tensor([2, 0, 1, 5, 3, 4])
     assert torch.allclose(MaskedEntityPool()(e, sc, m), MaskedEntityPool()(e[:, p], sc[:, p], m[:, p]), atol=1e-6)
+
+
+def test_occupancy_map_paints_a_wall_where_the_rays_hit():
+    from policy import OM_R
+    f = Features(omap=True); dist = np.ones(NUM_RAYS, np.float32); hit = np.zeros(NUM_RAYS, np.int64)
+    dist[0], hit[0] = 0.25, 1                                       # wall 256 units straight ahead = 4 cells
+    o = f(fake_obs(dist=dist, hit=hit))["omap"]
+    assert o[2, OM_R - 4, OM_R] == 1.0 and o[2].sum() == 1.0      # wall channel: exactly that cell, ahead
+    assert o[0, OM_R, OM_R] > 0                                     # visited channel: where we stand
+    assert o[1, OM_R - 2, OM_R] == 1.0                              # free space between us and the wall
+
+
+def test_occupancy_crop_rotates_with_our_own_turns():
+    from policy import OM_R, TL
+    f = Features(omap=True); dist = np.ones(NUM_RAYS, np.float32); hit = np.zeros(NUM_RAYS, np.int64)
+    dist[0], hit[0] = 0.25, 1
+    f(fake_obs(dist=dist, hit=hit))
+    turn = next(i for i, a in enumerate(ACTIONS) if a == (TL,))
+    for _ in range(7):                                              # 7 + 12.3 + 5 x 14.06 = 89.6 deg to the left
+        f.button_vector(turn); o = f(fake_obs())["omap"]
+    (r, c), = np.argwhere(o[2])
+    assert c == OM_R + 4 and abs(r - OM_R) <= 1                     # the old wall is now on our right
+
+
+def test_geodesic_shaping_does_not_reward_switching_objective():
+    from ppo import Shaper
+    sh = Shaper.__new__(Shaper); sh.fields = Shaper._fields(["#######", "#P.r.E#", "#######"]); sh.geo_d = sh.geo_phase = None
+    at = lambda gx, keys: {"x": (gx + 0.5) * 64, "y": 1.5 * 64, "keys": np.array(keys, float)}
+    assert sh._geo(at(1, [0] * 6)) == 0.0 and sh._geo(at(2, [0] * 6)) == 1.0
+    assert sh._geo(at(3, [0, 0, 1, 0, 0, 0])) == 0.0              # key picked up: new target, no jump in reward
+    assert sh._geo(at(4, [0, 0, 1, 0, 0, 0])) == 1.0
+
+
+def test_agent_builds_the_branches_its_checkpoint_was_trained_with(tmp_path):
+    import agent as agent_mod
+    from doom_env import make_env
+    net = EgoMemNet(32, vision=False, omap=True)
+    torch.save({"state": net.state_dict(), "cfg": {"hidden": 32, "vision": False, "omap": True, "masks": False}}, tmp_path / "egomem.pt")
+    old = agent_mod.WEIGHTS_DIR; agent_mod.WEIGHTS_DIR = tmp_path
+    try:
+        env = make_env(str(ROOT / "maps" / "two_rooms.wad"), "MAP01", episode_ticks=40, render_buffers=False)
+        ag = agent_mod.DoomAgent(env.observation_space, env.action_space, "cpu"); obs, _ = env.reset(seed=0); ag.reset()
+        assert ag.feat.omap and ag.net.omap and ag.act(obs).shape == (9,)
+        env.close()
+    finally:
+        agent_mod.WEIGHTS_DIR = old
+
+
+def test_diagnose_classifies_failures():
+    from diagnose import cause, summarise, worst
+    maps = [{"src": "gen1", "map": "0", "exit": 1.0, "dead": 0.0, "cells": 30, "proxy": 70, "kills": 2},
+            {"src": "gen1", "map": "1", "exit": 0.0, "dead": 1.0, "cells": 30, "proxy": 5, "kills": 1},
+            {"src": "gen2", "map": "0", "exit": 0.0, "dead": 0.0, "cells": 40, "proxy": 20, "kills": 0},
+            {"src": "gen2", "map": "1", "exit": 0.0, "dead": 0.0, "cells": 3, "proxy": 2, "kills": 0}]
+    assert [cause(m) for m in maps] == ["exit", "died", "lost", "stuck"]
+    assert summarise(maps)["gen1"] == {"exit": 1, "died": 1}
+    assert [m["map"] for m in worst(maps, 2)] == ["1", "1"] and worst(maps, 1)[0]["src"] == "gen2"
+
+
+def test_ship_rejects_a_checkpoint_that_does_not_fit_the_network(tmp_path):
+    from ship import check_checkpoint
+    bad = EgoMemNet(32).state_dict(); bad.pop("pi.bias")
+    torch.save({"state": bad, "cfg": {"hidden": 32}}, tmp_path / "bad.pt")
+    with pytest.raises(RuntimeError):
+        check_checkpoint(tmp_path / "bad.pt")
+    torch.save({"state": EgoMemNet(32).state_dict(), "cfg": {"hidden": 32}}, tmp_path / "ok.pt")
+    assert check_checkpoint(tmp_path / "ok.pt")["cfg"]["hidden"] == 32
