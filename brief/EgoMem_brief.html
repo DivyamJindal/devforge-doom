@@ -42,9 +42,9 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
   <div class="usp"><b>USP:</b> a recurrent agent with an <b>episodic place memory</b> (rotation-invariant scene signatures, so "I have been here" needs no coordinates) and a <b>self-drawn ego occupancy map</b> (heading dead-reckoned from its own turn presses with DOOM's exact turn model), trained with <b>our own asynchronous recurrent PPO</b> on an <b>endless stream of procedurally generated levels</b> that mirror the four hidden tiers. It never sees the same layout twice, so it has to learn to play DOOM rather than memorise maps. Every action comes from the network: no pathfinding, no rule trees, no aimbot.</div>
 
   <div class="kpis">
-    <div><span class="big">50%</span><small>exit reached on unseen tier-4 gauntlets</small></div>
-    <div><span class="big">0.75</span><small>keycards per unseen gauntlet; 0.50 locked doors opened</small></div>
-    <div><span class="big">8%</span><small>deaths on unseen tier-3 key → lock → exit levels</small></div>
+    <div><span class="big">58%</span><small>exit reached on unseen tier-3 key → lock → exit levels</small></div>
+    <div><span class="big">0.88</span><small>keycards per unseen tier-3 level; 0.67 locked doors opened</small></div>
+    <div><span class="big">12%</span><small>deaths on unseen tier-2 multi-room levels</small></div>
     <div><span class="big">75%</span><small>multi-room exits on unseen levels (was 31%)</small></div>
     <div><span class="big">&lt;1 ms</span><small>p50 per decision on 1 CPU thread (budget 40 ms)</small></div>
   </div>
@@ -56,11 +56,11 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
       <rect x="2" y="4" width="128" height="26" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="66" y="21" text-anchor="middle">64 rays × (dist, 6 hit types)</text>
       <rect x="2" y="36" width="128" height="26" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="66" y="53" text-anchor="middle">≤ 32 visible entities</text>
       <rect x="2" y="68" width="128" height="26" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="66" y="85" text-anchor="middle">vitals, keys, prev action</text>
-      <rect x="2" y="100" width="128" height="26" rx="3" fill="#fbe9d8" stroke="#b5361f"/><text x="66" y="117" text-anchor="middle" fill="#b5361f" font-weight="600">memory signals + RGB-D</text>
+      <rect x="2" y="100" width="128" height="26" rx="3" fill="#fbe9d8" stroke="#b5361f"/><text x="66" y="117" text-anchor="middle" fill="#b5361f" font-weight="600">memory + RGB-D + occ. map</text>
       <rect x="160" y="4" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="21" text-anchor="middle" fill="#f1eadb">circular Conv1d ×3 (ring, no seam)</text>
       <rect x="160" y="36" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="53" text-anchor="middle" fill="#f1eadb">entity MLP → attention + max pool</text>
       <rect x="160" y="68" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="85" text-anchor="middle" fill="#f1eadb">MLP</text>
-      <rect x="160" y="100" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="117" text-anchor="middle" fill="#f1eadb">memory MLP + 30×40 vision CNN</text>
+      <rect x="160" y="100" width="170" height="26" rx="3" fill="#14181b"/><text x="245" y="117" text-anchor="middle" fill="#f1eadb">memory MLP + vision CNN + map CNN</text>
       <rect x="370" y="40" width="90" height="50" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="415" y="62" text-anchor="middle" font-weight="600">fuse</text><text x="415" y="76" text-anchor="middle" fill="#56626a">512 → 256</text>
       <rect x="490" y="40" width="96" height="50" rx="3" fill="#1f5f7a"/><text x="538" y="62" text-anchor="middle" fill="#fff" font-weight="600">GRU 256</text><text x="538" y="76" text-anchor="middle" fill="#cfe3ea">time memory</text>
       <rect x="616" y="22" width="140" height="34" rx="3" fill="#fffdf9" stroke="#14181b"/><text x="686" y="37" text-anchor="middle">policy: 15 macro-actions</text><text x="686" y="49" text-anchor="middle" fill="#56626a">USE pulsed (edge-triggered)</text>
@@ -73,9 +73,9 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
     <tr><td><b>Circular ray CNN</b></td><td>3 Conv1d layers with circular padding over the 64-ray ring (distance + one-hot hit type: wall, door, locked door, enemy, item).</td><td>The ring has no start or end. A plain CNN or MLP treats ray 0 and ray 63 as far apart; ours sees an obstacle behind-left the same wherever it falls.</td></tr>
     <tr><td><b>Ego occupancy map</b></td><td>The agent paints free space, walls and doors from its rays into its own world grid, using heading dead-reckoned from its turn presses (5 slow tics at 1.76°, then 3.52°/tic, exact against ground truth) and position from its velocity. A 21×21 crop rotated to its heading feeds a small CNN.</td><td>Memory of where corridors and unexplored gaps are, beyond the current view. Grafted onto v3 at zero weight, then trained: multi-room exits 31% → 75%, key/lock 28% → 50% on fresh levels.</td></tr>
     <tr><td><b>Entity set encoder</b></td><td>Per-entity MLP over (distance, sin/cos angle, relative velocity, type), then masked attention pooling + max pooling.</td><td>Permutation-invariant and handles 0–32 enemies, items or projectiles: answers "variable numbers of enemies" directly. Padding cannot leak in (unit-tested).</td></tr>
-    <tr><td><b>Episodic place memory</b></td><td>Every 2 steps it stores a 19-D signature of the surroundings: FFT magnitude of the ray ring + hit-type histogram. Each step outputs novelty (distance to the nearest stored place), familiarity (number of near matches) and steps since last novel place.</td><td><b>Rotation-invariant by construction</b> (FFT magnitude ignores ring shifts), so turning on the spot does not look like a new place. Needs no coordinates. We first tried velocity dead-reckoning for a metric map; it drifted ~800 map units in 300 steps, so we dropped it for place recognition.</td></tr>
+    <tr><td><b>Episodic place memory</b></td><td>Every 2 steps it stores a 19-D signature of the surroundings: FFT magnitude of the ray ring + hit-type histogram. Each step outputs novelty (distance to the nearest stored place), familiarity (number of near matches) and steps since last novel place.</td><td><b>Rotation-invariant by construction</b> (FFT magnitude ignores ring shifts), so turning on the spot does not look like a new place. Needs no coordinates. Velocity alone drifted ~800 map units in 300 steps; the occupancy map fixes heading exactly from turn presses, which keeps drift under 150 units over 150 steps (tested).</td></tr>
     <tr><td><b>Event memory</b></td><td>Locked door seen and how long ago, door seen and how long ago, keys held (from vitals), damage taken recently.</td><td>Long-horizon tier: "I saw a locked door 200 steps ago and now hold the key" is exactly the signal needed to backtrack, and a GRU alone forgets it.</td></tr>
-    <tr><td><b>Vision branch</b></td><td>3-layer CNN on a 30×40 RGB + depth frame (every 4th pixel), added to a trained agent with zero-initialised fusion weights, so it starts identical and only improves.</td><td>Exit pads and exit switches are invisible to rays and entities. With vision, gauntlet exits on held-out maps rose from 25% to 50%.</td></tr>
+    <tr><td><b>Vision branch</b></td><td>3-layer CNN on a 30×40 RGB + depth frame (every 4th pixel), added to a trained agent with zero-initialised fusion weights, so it starts identical and only improves.</td><td>Exit pads and exit switches are invisible to rays and entities. Adding it raised the held-out proxy from 40.0 to 45.</td></tr>
     <tr><td><b>GRU core + macro-actions</b></td><td>GRU(256) integrates everything over time. 15 macro-actions over the 9 buttons; USE is pulsed because it fires only on 0 → 1 and re-pressing reverses a moving door.</td><td>Respects the engine quirks the organisers flagged. A 15-way categorical learns much faster than 9 independent Bernoullis.</td></tr>
   </table>
 
@@ -156,8 +156,8 @@ svg text{font-family:"Avenir Next","Helvetica Neue",Arial,sans-serif}
       <h2><span>08</span>Engineering</h2>
       <ul>
         <li>The official <span class="tag">validate.py</span> passes; <span class="tag">env/</span> is identical to the latest template; inference is self-contained in <span class="tag">submission/</span>.</li>
-        <li>32 unit and integration tests: memory rotation-invariance, USE pulsing, step ≡ sequence equivalence of the GRU, generator solvability, official-env integration.</li>
-        <li>Weights 3 MB (Git LFS); one CPU thread; deterministic seeded sampling (temperature 0.75, chosen on held-out maps).</li>
+        <li>37 unit and integration tests (incl. dead-reckoned heading vs ground truth): memory rotation-invariance, USE pulsing, step ≡ sequence equivalence of the GRU, generator solvability, official-env integration.</li>
+        <li>Weights 4.3 MB (Git LFS, plus a plain-git copy); one CPU thread; deterministic seeded sampling (temperature 0.75, chosen on held-out maps).</li>
       </ul>
     </div>
   </div>
