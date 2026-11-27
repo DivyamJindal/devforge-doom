@@ -214,3 +214,52 @@ def test_exit_switch_variant(tmp_path):
     txt = (tmp_path / "s.wad").read_bytes().decode("latin1")
     assert "special = 243; playeruse = true" in txt and "special = 243; playercross" not in txt
     assert a == generate(11, 2, tmp_path / "b.wad")
+
+
+# ------------------------------------------------------------------ occupancy map and progress shaping
+def test_turn_model_matches_doom_slowturn():
+    from policy import turn_degrees
+    assert turn_degrees(0) == pytest.approx(7.03125) and turn_degrees(4) == pytest.approx(12.3046875)
+    assert turn_degrees(8) == pytest.approx(14.0625)
+
+
+def test_dead_reckoned_heading_and_position_track_ground_truth(tmp_path):
+    """Heading from our own turn presses stays exact (up to a constant offset); position drift stays small."""
+    import math
+    from doom_env import make_env
+    generate(5, 2, tmp_path / "m.wad")
+    env = make_env(str(tmp_path / "m.wad"), "MAP01", episode_ticks=2000, render_buffers=False)
+    obs, _ = env.reset(seed=0); f = Features(omap=True); f(obs); rng = random.Random(1); a = 1
+    ps = env.privileged_state(); x0, y0 = ps["x"], ps["y"]; offs, perr = [], []
+    for t in range(150):
+        if rng.random() < 0.3:
+            a = rng.randrange(1, 9)
+        obs, _, te, tr, _ = env.step(f.button_vector(a)); f(obs); ps = env.privileged_state()
+        offs.append((math.degrees(f.om.h) - ps["angle"]) % 360)
+        if t == 0:
+            h0 = math.radians(ps["angle"]) - f.om.h; ex, ey = f.om.x, f.om.y
+        if te or tr:
+            break
+    assert max(offs[1:]) - min(offs[1:]) < 0.05
+    c, s = math.cos(h0), math.sin(h0)
+    gx, gy = f.om.x * c - f.om.y * s, f.om.x * s + f.om.y * c
+    assert math.hypot(gx - (ps["x"] - x0), gy - (ps["y"] - y0)) < 150
+    env.close()
+
+
+def test_omap_branch_warm_starts_identically():
+    from policy import warm_start
+    torch.manual_seed(0); old = EgoMemNet(64).eval(); new = EgoMemNet(64, omap=True).eval()
+    warm_start(new, old.state_dict())
+    fe = Features(omap=True); fe(fake_obs()); f = fe(fake_obs(dist=np.full(NUM_RAYS, 0.3, np.float32)))
+    assert f["omap"].shape == (4, 21, 21) and f["omap"][1].sum() > 0
+    x = {k: torch.from_numpy(v)[None] for k, v in f.items()}
+    with torch.no_grad():
+        assert torch.allclose(old.step(x, torch.zeros(1, 64))[0], new.step(x, torch.zeros(1, 64))[0], atol=1e-6)
+
+
+def test_geodesic_shaping_rewards_approaching_the_exit():
+    from ppo import Shaper
+    sh = Shaper.__new__(Shaper); sh.fields = Shaper._fields(["#####", "#P.E#", "#####"]); sh.geo_d = sh.geo_phase = None
+    at = lambda gx: {"x": (gx + 0.5) * 64, "y": 1.5 * 64, "keys": np.zeros(6)}
+    assert sh._geo(at(1)) == 0.0 and sh._geo(at(2)) == 1.0 and sh._geo(at(1)) == -1.0

@@ -13,7 +13,11 @@ Architecture (all trained end-to-end with our own recurrent PPO):
                 ring + hit-type histogram) is compared with every place visited this episode -> novelty/familiarity
                 signals that tell the agent "I have been here" without any map coordinates;
             (2) event memory: locked door seen / how long ago, door seen, keys held, recent damage;
-            (3) a GRU that integrates all of it over time.
+            (3) a GRU that integrates all of it over time;
+            (4) optional ego-centric occupancy map (omap): heading is dead-reckoned from our own turn presses with
+                DOOM's exact turn model (5 slow tics at 1.76 deg, then 3.52 deg/tic; verified exact against ground
+                truth), position from the observed velocity. Rays paint free space, walls and doors into a world-
+                frame grid; a 21x21 crop rotated to the agent's heading (64 units/cell, +-672 units) goes to a CNN.
 Actions are 15 macro-actions over the 9 buttons (USE is pulsed so holding it re-triggers doors correctly).
 """
 from __future__ import annotations
@@ -29,6 +33,54 @@ N_ACT = len(ACTIONS)
 MEM_CAP, MEM_EVERY, NOVEL_THR = 512, 2, 0.09
 SIG_DIM = 12 + N_HIT + 1
 N_SCALAR = 24 + N_ACT + 10
+OM_CELL, OM_N, OM_R, OM_C = 64.0, 256, 10, 4          # grid cell size, world grid side, crop radius, channels
+RAY_RANGE = 1024.0
+_RAY_ANG = np.arange(NUM_RAYS) * (2 * np.pi / NUM_RAYS)
+_FRAC = np.linspace(0.1, 0.9, 9)
+_OFF = np.stack(np.meshgrid(np.arange(OM_R, -OM_R - 1, -1), np.arange(-OM_R, OM_R + 1), indexing="ij"), -1).reshape(-1, 2) * OM_CELL  # (fwd, right)
+
+
+def turn_degrees(held_tics: int) -> float:
+    """Heading change of one 4-tic step with TURN held, given how many tics it was already held (DOOM SLOWTURNTICS)."""
+    return sum(1.7578125 if held_tics + i + 1 <= 5 else 3.515625 for i in range(4))
+
+
+class OccupancyMap:
+    """Dead-reckoned world-frame grid; channels: visited, free, wall, door/locked door. The grid wraps around
+    (torus) so no level size can index out of bounds. ponytail: no loop closure, drift grows ~0.6 units/step."""
+
+    def __init__(self):
+        self.g = np.zeros((OM_C, OM_N, OM_N), np.float32); self.x = self.y = self.h = 0.0
+        self.held = 0; self.pw = np.zeros(2)
+
+    def _idx(self, wx, wy):
+        return (np.floor(wx / OM_CELL).astype(np.int64) % OM_N, np.floor(wy / OM_CELL).astype(np.int64) % OM_N)
+
+    def update(self, prev_action: int, vel_fr, dist, hit, first: bool) -> np.ndarray:
+        a = ACTIONS[prev_action]
+        if not first:
+            d = 1 if TL in a else -1 if TR in a else 0
+            if d:
+                self.h += np.radians(d * turn_degrees(self.held)); self.held += 4
+            else:
+                self.held = 0
+        c, s = np.cos(self.h), np.sin(self.h)
+        w = np.array([vel_fr[0] * c + vel_fr[1] * s, vel_fr[0] * s - vel_fr[1] * c])
+        if not first:                                   # per-step displacement fit on ground truth (resid 0.6 units)
+            dx, dy = 2.76 * w + 1.56 * self.pw; self.x += dx; self.y += dy
+        self.pw = w
+        ang = self.h + _RAY_ANG; r = dist * RAY_RANGE
+        fx = self.x + np.outer(r, _FRAC) * np.cos(ang)[:, None]; fy = self.y + np.outer(r, _FRAC) * np.sin(ang)[:, None]
+        self.g[(1, *self._idx(fx.ravel(), fy.ravel()))] = 1.0
+        solid = (dist < 0.999) & (hit >= 1) & (hit <= 3)
+        if solid.any():
+            hx = self.x + r[solid] * np.cos(ang[solid]); hy = self.y + r[solid] * np.sin(ang[solid])
+            ch = np.where(hit[solid] == 1, 2, 3)
+            self.g[(ch, *self._idx(hx, hy))] = 1.0
+        ix, iy = self._idx(np.array([self.x]), np.array([self.y]))
+        self.g[0, ix, iy] = min(self.g[0, ix[0], iy[0]] + 0.25, 1.0)
+        ox = self.x + _OFF[:, 0] * c + _OFF[:, 1] * s; oy = self.y + _OFF[:, 0] * s - _OFF[:, 1] * c
+        return self.g[(slice(None), *self._idx(ox, oy))].reshape(OM_C, 2 * OM_R + 1, 2 * OM_R + 1)
 
 
 def place_signature(dist: np.ndarray, hit: np.ndarray) -> np.ndarray:
@@ -41,8 +93,8 @@ def place_signature(dist: np.ndarray, hit: np.ndarray) -> np.ndarray:
 class Features:
     """Per-episode stateful feature extractor (memory lives here). Call reset() before every map."""
 
-    def __init__(self, vision: bool = False):
-        self.vision = vision
+    def __init__(self, vision: bool = False, omap: bool = False):
+        self.vision, self.omap = vision, omap
         self.reset()
 
     def reset(self):
@@ -50,6 +102,7 @@ class Features:
         self.since_novel = 0; self.prev_action = 0; self.use_down = False
         self.locked_seen = 0.0; self.since_locked = 999; self.door_seen = 0.0; self.since_door = 999
         self.prev_health = None; self.dmg_recent = 0.0; self.novel = False
+        self.om = OccupancyMap() if self.omap else None
 
     def button_vector(self, a: int) -> np.ndarray:
         """Macro-action -> 9 buttons. USE fires on the button-down edge, so a held USE is released every other step."""
@@ -116,6 +169,8 @@ class Features:
         if front > 0.12:                                      # nothing within reach ahead: USE is pointless
             am[[i for i, a in enumerate(ACTIONS) if USE in a]] = 0.0
         out = {"ray": ray, "ent": ent, "mask": m, "scal": np.concatenate([vit, pa, mem]), "amask": am}
+        if self.om is not None:
+            out["omap"] = self.om.update(self.prev_action, v[14:16], dist, hit, self.t == 1)
         if self.vision:                                # 4 x 30 x 40 uint8: RGB + depth, every 4th pixel
             rgb = np.asarray(obs.get("rgb", np.zeros((120, 160, 3), np.uint8)))[::4, ::4]
             dep = np.asarray(obs.get("depth", np.zeros((120, 160), np.uint8)))[::4, ::4]
@@ -140,9 +195,9 @@ def warm_start(net: "EgoMemNet", state: dict) -> None:
 
 
 class EgoMemNet(nn.Module):
-    def __init__(self, hidden: int = 256, vision: bool = False):
+    def __init__(self, hidden: int = 256, vision: bool = False, omap: bool = False):
         super().__init__()
-        self.hidden, self.vision = hidden, vision
+        self.hidden, self.vision, self.omap = hidden, vision, omap
         self.ray = nn.Sequential(
             nn.Conv1d(1 + N_HIT, 32, 5, padding=2, padding_mode="circular"), nn.ReLU(),
             nn.Conv1d(32, 48, 5, stride=2, padding=2, padding_mode="circular"), nn.ReLU(),
@@ -154,12 +209,15 @@ class EgoMemNet(nn.Module):
         if vision:   # sees what rays cannot: exit pads/switches, door and key colours, lighting
             self.vis = nn.Sequential(nn.Conv2d(4, 16, 5, stride=2, padding=2), nn.ReLU(), nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),
                                      nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 4 * 5, 128), nn.ReLU())
-        self.fuse = nn.Sequential(nn.Linear(256 + 128 + 128 + (128 if vision else 0), hidden), nn.ReLU())
+        if omap:     # ego occupancy map: where walls, doors and unexplored gaps are, beyond the current view
+            self.om = nn.Sequential(nn.Conv2d(OM_C, 16, 3, padding=1), nn.ReLU(), nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),
+                                    nn.Conv2d(32, 32, 3, stride=2, padding=1), nn.ReLU(), nn.Flatten(), nn.Linear(32 * 6 * 6, 128), nn.ReLU())
+        self.fuse = nn.Sequential(nn.Linear(256 + 128 + 128 + (128 if vision else 0) + (128 if omap else 0), hidden), nn.ReLU())
         self.gru = nn.GRUCell(hidden, hidden)
         self.pi = nn.Linear(hidden, N_ACT); self.v = nn.Linear(hidden, 1)
         nn.init.orthogonal_(self.pi.weight, 0.01); nn.init.zeros_(self.pi.bias)
 
-    def embed(self, ray, ent, mask, scal, img=None):
+    def embed(self, ray, ent, mask, scal, img=None, omap=None):
         e = self.ent(ent)                                                   # [N,32,64]
         s = self.ent_score(e).squeeze(-1).masked_fill(mask < 0.5, -1e9)
         att = torch.softmax(s, -1) * (mask.sum(-1, keepdim=True) > 0)
@@ -167,21 +225,23 @@ class EgoMemNet(nn.Module):
         parts = [self.ray(ray), pooled, self.scal(scal)]
         if self.vision:
             parts.append(self.vis(img.float() / 255.0))
+        if self.omap:
+            parts.append(self.om(omap))
         return self.fuse(torch.cat(parts, -1))
 
     def masked(self, logits, amask):
         return logits if amask is None else logits.masked_fill(amask < 0.5, -1e9)
 
     def step(self, x: dict, h):
-        z = self.embed(x["ray"], x["ent"], x["mask"], x["scal"], x.get("img"))
+        z = self.embed(x["ray"], x["ent"], x["mask"], x["scal"], x.get("img"), x.get("omap"))
         h = self.gru(z, h)
         return self.masked(self.pi(h), x.get("amask")), self.v(h).squeeze(-1), h
 
     def sequence(self, x: dict, h0, starts):
         """x: tensors [T,B,...]; starts [T,B] = 1 where a new episode begins (hidden reset). -> logits, values [T,B]."""
         T, Bn = starts.shape
-        keys = ("ray", "ent", "mask", "scal", "img") if self.vision else ("ray", "ent", "mask", "scal")
-        z = self.embed(*(x[k].reshape(T * Bn, *x[k].shape[2:]) for k in keys)).reshape(T, Bn, -1)
+        r = lambda k: x[k].reshape(T * Bn, *x[k].shape[2:]) if k in x else None
+        z = self.embed(r("ray"), r("ent"), r("mask"), r("scal"), r("img"), r("omap")).reshape(T, Bn, -1)
         h, logits, values = h0, [], []
         for t in range(T):
             h = h * (1 - starts[t]).unsqueeze(-1)

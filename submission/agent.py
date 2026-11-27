@@ -31,7 +31,7 @@ class DoomAgent:
         ck = torch.load(path, map_location="cpu", weights_only=True)
         self.net = EgoMemNet(**{k: v for k, v in ck.get("cfg", {}).items() if k != "masks"})
         self.net.load_state_dict(ck["state"]); self.net.eval()
-        self.feat = Features(vision=self.net.vision)
+        self.feat = Features(vision=self.net.vision, omap=self.net.omap)
         self.use_masks = bool(ck.get("cfg", {}).get("masks", False))   # only for checkpoints trained with action masks
         self.h = torch.zeros(1, self.net.hidden)
         self.gen = torch.Generator().manual_seed(0)
