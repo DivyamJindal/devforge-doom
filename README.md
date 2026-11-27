@@ -93,8 +93,8 @@ asynchronous workers with double-buffered level boot raised it to ~5k steps/s pe
 metric map drifted too much to be useful, which is why the memory is episodic and place-based. A higher sampling
 temperature (1.0) and a lower one (0.5) both scored slightly worse than 0.75.
 Adding observation-based action masks and a "stuck for 200 tics ends the episode" rule to an already-trained policy
-(both borrowed from another team) cut its training-time exit rate from about 30% to 6% on the first update and the run
-never recovered (held-out 39 vs 45): the policy was trained without them, so they are off by default now
+(both borrowed from another team) cut its training-time exit rate on multi-room levels from about 30% to 6% straight away, and a run trained that
+way (`v6`) ended at a held-out 39 vs v3's 45: the policy was trained without them, so they are off by default now
 (`--masks`, `--shape stuck_tics=0`).
 
 **Built and training now (not in the shipped weights yet):** an ego-centric occupancy map (`--omap`). Heading is
